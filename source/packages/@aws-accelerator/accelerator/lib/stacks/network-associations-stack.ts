@@ -30,6 +30,7 @@ import {
   SsmParameter,
   SsmParameterType,
   TransitGatewayAttachment,
+  TransitGatewayPrefixListReference,
   TransitGatewayRouteTableAssociation,
   TransitGatewayRouteTablePropagation,
   TransitGatewayStaticRoute,
@@ -136,11 +137,11 @@ export class NetworkAssociationsStack extends AcceleratorStack {
 
             // Evaluate Route Table Associations
             for (const routeTableItem of tgwAttachmentItem.routeTableAssociations ?? []) {
-              const key = `${tgwAttachmentItem.transitGateway.name}_${routeTableItem}`;
+              const associationsKey = `${tgwAttachmentItem.transitGateway.name}_${routeTableItem}`;
 
-              const transitGatewayRouteTableId = transitGatewayRouteTables.get(key);
+              const transitGatewayRouteTableId = transitGatewayRouteTables.get(associationsKey);
               if (transitGatewayRouteTableId === undefined) {
-                throw new Error(`Transit Gateway Route Table ${key} not found`);
+                throw new Error(`Transit Gateway Route Table ${associationsKey} not found`);
               }
 
               new TransitGatewayRouteTableAssociation(
@@ -155,11 +156,11 @@ export class NetworkAssociationsStack extends AcceleratorStack {
 
             // Evaluate Route Table Propagations
             for (const routeTableItem of tgwAttachmentItem.routeTablePropagations ?? []) {
-              const key = `${tgwAttachmentItem.transitGateway.name}_${routeTableItem}`;
+              const propagationsKey = `${tgwAttachmentItem.transitGateway.name}_${routeTableItem}`;
 
-              const transitGatewayRouteTableId = transitGatewayRouteTables.get(key);
+              const transitGatewayRouteTableId = transitGatewayRouteTables.get(propagationsKey);
               if (transitGatewayRouteTableId === undefined) {
-                throw new Error(`Transit Gateway Route Table ${key} not found`);
+                throw new Error(`Transit Gateway Route Table ${propagationsKey} not found`);
               }
 
               new TransitGatewayRouteTablePropagation(
@@ -176,63 +177,146 @@ export class NetworkAssociationsStack extends AcceleratorStack {
       }
     }
 
+    //
+    // Build prefix list map
+    //
+    const prefixListMap = new Map<string, string>();
+    for (const prefixListItem of props.networkConfig.prefixLists ?? []) {
+      // Check if the set belongs in this account/region
+      const accountIds = prefixListItem.accounts.map(item => {
+        return props.accountsConfig.getAccountId(item);
+      });
+      const regions = prefixListItem.regions.map(item => {
+        return item.toString();
+      });
+
+      if (accountIds.includes(cdk.Stack.of(this).account) && regions.includes(cdk.Stack.of(this).region)) {
+        const prefixListId = cdk.aws_ssm.StringParameter.valueForStringParameter(
+          this,
+          `/accelerator/network/prefixList/${prefixListItem.name}/id`,
+        );
+        prefixListMap.set(prefixListItem.name, prefixListId);
+      }
+    }
+
+    //
     // Evaluate Transit Gateway Static Routes
+    // and prefix list references
+    //
     for (const tgwItem of props.networkConfig.transitGateways ?? []) {
       if (
         cdk.Stack.of(this).account === props.accountsConfig.getAccountId(tgwItem.account) &&
         cdk.Stack.of(this).region === tgwItem.region
       ) {
         for (const routeTableItem of tgwItem.routeTables ?? []) {
+          const transitGatewayRouteTableId = cdk.aws_ssm.StringParameter.valueForStringParameter(
+            this,
+            `/accelerator/network/transitGateways/${tgwItem.name}/routeTables/${routeTableItem.name}/id`,
+          );
+
           for (const routeItem of routeTableItem.routes ?? []) {
             // Throw exception when a blackhole route and a VPC attachment is presented.
             if (routeItem.blackhole && routeItem.attachment) {
-              throw new Error('Cannot specify blackhole route and an attachment!');
+              throw new Error(
+                `[network-associations-stack] Transit gateway route specifies both blackhole and attachment target. Please choose only one.`,
+              );
             }
-            // Build a static route when a route is being blackholed.
-            if (routeItem.blackhole) {
-              Logger.info(
-                `[network-associations-stack] Adding blackhole route ${routeItem.destinationCidrBlock} to TGW route table ${routeTableItem.name} for TGW ${tgwItem.name} in account: ${tgwItem.account}`,
-              );
-              new TransitGatewayStaticRoute(
-                this,
-                `${routeTableItem.name}-${routeItem.destinationCidrBlock}-blackhole`,
-                {
-                  transitGatewayRouteTableId: cdk.aws_ssm.StringParameter.valueForStringParameter(
-                    this,
-                    `/accelerator/network/transitGateways/${tgwItem.name}/routeTables/${routeTableItem.name}/id`,
-                  ),
-                  blackhole: routeItem.blackhole,
-                  destinationCidrBlock: routeItem.destinationCidrBlock,
-                },
-              );
-            } else if (routeItem.attachment) {
-              // Get TGW attachment ID
-              const transitGatewayAttachmentId = transitGatewayAttachments.get(
-                `${routeItem.attachment.account}_${routeItem.attachment.vpcName}`,
-              );
 
-              if (transitGatewayAttachmentId) {
+            if (routeItem.destinationCidrBlock && routeItem.destinationPrefixList) {
+              throw new Error(
+                `[network-associations-stack] Transit gateway route using destination and destinationPrefixList. Please choose only one destination type`,
+              );
+            }
+
+            //
+            // Create static routes
+            //
+            if (routeItem.destinationCidrBlock) {
+              let routeTableId = '';
+              let transitGatewayAttachmentId: string | undefined = undefined;
+              if (routeItem.blackhole) {
                 Logger.info(
-                  `[network-associations-stack] Adding static route ${routeItem.destinationCidrBlock} to VPC attachment ${routeItem.attachment.vpcName} in account ${routeItem.attachment.account} to route table ${routeTableItem.name} for TGW ${tgwItem.name}`,
+                  `[network-associations-stack] Adding blackhole route ${routeItem.destinationCidrBlock} to TGW route table ${routeTableItem.name} for TGW ${tgwItem.name} in account: ${tgwItem.account}`,
+                );
+                routeTableId = `${routeTableItem.name}-${routeItem.destinationCidrBlock}-blackhole`;
+              }
+
+              if (routeItem.attachment) {
+                Logger.info(
+                  `[network-associations-stack] Adding route ${routeItem.destinationCidrBlock} to TGW route table ${routeTableItem.name} for TGW ${tgwItem.name} in account: ${tgwItem.account}`,
+                );
+                routeTableId = `${routeTableItem.name}-${routeItem.destinationCidrBlock}-${routeItem.attachment.vpcName}-${routeItem.attachment.account}`;
+
+                // Get TGW attachment ID
+                transitGatewayAttachmentId = transitGatewayAttachments.get(
+                  `${routeItem.attachment.account}_${routeItem.attachment.vpcName}`,
                 );
 
-                new TransitGatewayStaticRoute(
-                  this,
-                  `${routeTableItem.name}-${routeItem.destinationCidrBlock}-${routeItem.attachment.vpcName}-${routeItem.attachment.account}`,
-                  {
-                    transitGatewayRouteTableId: cdk.aws_ssm.StringParameter.valueForStringParameter(
-                      this,
-                      `/accelerator/network/transitGateways/${tgwItem.name}/routeTables/${routeTableItem.name}/id`,
-                    ),
-                    destinationCidrBlock: routeItem.destinationCidrBlock,
-                    transitGatewayAttachmentId: transitGatewayAttachmentId,
-                  },
-                );
-              } else {
+                if (!transitGatewayAttachmentId) {
+                  throw new Error(
+                    `[network-associations-stack] Unable to locate transit gateway attachment ID for route table item ${routeTableItem.name}`,
+                  );
+                }
+              }
+
+              // Create static route
+              new TransitGatewayStaticRoute(this, routeTableId, {
+                transitGatewayRouteTableId,
+                blackhole: routeItem.blackhole,
+                destinationCidrBlock: routeItem.destinationCidrBlock,
+                transitGatewayAttachmentId,
+              });
+            }
+
+            //
+            // Create prefix list references
+            //
+            if (routeItem.destinationPrefixList) {
+              // Get PL ID from map
+              const prefixListId = prefixListMap.get(routeItem.destinationPrefixList);
+              if (!prefixListId) {
                 throw new Error(
-                  `[network-associations-stack] Unable to locate transit gateway attachment ID for route table item ${routeTableItem.name}`,
+                  `[network-associations-stack] Prefix list ${routeItem.destinationPrefixList} not found`,
                 );
               }
+
+              let plId = '';
+              let transitGatewayAttachmentId: string | undefined = undefined;
+              if (routeItem.blackhole) {
+                Logger.info(
+                  `[network-associations-stack] Adding blackhole prefix list reference ${routeItem.destinationPrefixList} to TGW route table ${routeTableItem.name} for TGW ${tgwItem.name} in account: ${tgwItem.account}`,
+                );
+                plId = pascalCase(`${routeTableItem.name}${routeItem.destinationPrefixList}Blackhole`);
+              }
+              if (routeItem.attachment) {
+                Logger.info(
+                  `[network-associations-stack] Adding prefix list reference ${routeItem.destinationPrefixList} to TGW route table ${routeTableItem.name} for TGW ${tgwItem.name} in account: ${tgwItem.account}`,
+                );
+                plId = pascalCase(
+                  `${routeTableItem.name}${routeItem.destinationPrefixList}${routeItem.attachment.vpcName}${routeItem.attachment.account}`,
+                );
+
+                // Get TGW attachment ID
+                transitGatewayAttachmentId = transitGatewayAttachments.get(
+                  `${routeItem.attachment.account}_${routeItem.attachment.vpcName}`,
+                );
+
+                if (!transitGatewayAttachmentId) {
+                  throw new Error(
+                    `[network-associations-stack] Unable to locate transit gateway attachment ID for route table item ${routeTableItem.name}`,
+                  );
+                }
+              }
+
+              // Create prefix list reference
+              new TransitGatewayPrefixListReference(this, plId, {
+                prefixListId,
+                blackhole: routeItem.blackhole,
+                transitGatewayAttachmentId,
+                transitGatewayRouteTableId,
+                logGroupKmsKey: this.key,
+                logRetentionInDays: this.logRetention,
+              });
             }
           }
         }
@@ -250,6 +334,11 @@ export class NetworkAssociationsStack extends AcceleratorStack {
         props.accountsConfig.getAccountId(item.account) === cdk.Stack.of(this).account &&
         item.region === cdk.Stack.of(this).region,
     );
+
+    if (props.partition !== 'aws' && centralEndpointVpcs.length > 0) {
+      throw new Error('Central Endpoint VPC is only possible in commercial regions');
+    }
+
     if (centralEndpointVpcs.length > 1) {
       throw new Error(`multiple (${centralEndpointVpcs.length}) central endpoint vpcs detected, should only be one`);
     }
@@ -316,6 +405,11 @@ export class NetworkAssociationsStack extends AcceleratorStack {
       if (accountId === cdk.Stack.of(this).account && vpcItem.region == cdk.Stack.of(this).region) {
         // DNS firewall rule group associations
         for (const firewallItem of vpcItem.dnsFirewallRuleGroups ?? []) {
+          // Throw error if centralNetworkConfig is undefined
+          if (!centralNetworkConfig) {
+            throw new Error('[network-associations-stack] centralNetworkServices is undefined');
+          }
+
           // Get VPC ID
           const vpcId = cdk.aws_ssm.StringParameter.valueForStringParameter(
             this,
@@ -323,29 +417,27 @@ export class NetworkAssociationsStack extends AcceleratorStack {
           );
 
           // Skip lookup if already added to map
-          if (dnsFirewallMap.has(firewallItem.name)) {
-            continue;
-          }
+          if (!dnsFirewallMap.has(firewallItem.name)) {
+            if (centralNetworkConfig?.delegatedAdminAccount) {
+              const owningAccountId = props.accountsConfig.getAccountId(centralNetworkConfig.delegatedAdminAccount);
 
-          if (centralNetworkConfig?.delegatedAdminAccount) {
-            const owningAccountId = props.accountsConfig.getAccountId(centralNetworkConfig.delegatedAdminAccount);
-
-            // Get SSM parameter if this is the owning account
-            if (owningAccountId === cdk.Stack.of(this).account) {
-              const ruleId = cdk.aws_ssm.StringParameter.valueForStringParameter(
-                this,
-                `/accelerator/network/route53Resolver/firewall/ruleGroups/${firewallItem.name}/id`,
-              );
-              dnsFirewallMap.set(firewallItem.name, ruleId);
-            } else {
-              // Get ID from the resource share
-              const ruleId = this.getResourceShare(
-                vpcItem.name,
-                `${firewallItem.name}_ResolverFirewallRuleGroupShare`,
-                'route53resolver:FirewallRuleGroup',
-                owningAccountId,
-              ).resourceShareItemId;
-              dnsFirewallMap.set(firewallItem.name, ruleId);
+              // Get SSM parameter if this is the owning account
+              if (owningAccountId === cdk.Stack.of(this).account) {
+                const ruleId = cdk.aws_ssm.StringParameter.valueForStringParameter(
+                  this,
+                  `/accelerator/network/route53Resolver/firewall/ruleGroups/${firewallItem.name}/id`,
+                );
+                dnsFirewallMap.set(firewallItem.name, ruleId);
+              } else {
+                // Get ID from the resource share
+                const ruleId = this.getResourceShare(
+                  vpcItem.name,
+                  `${firewallItem.name}_ResolverFirewallRuleGroupShare`,
+                  'route53resolver:FirewallRuleGroup',
+                  owningAccountId,
+                ).resourceShareItemId;
+                dnsFirewallMap.set(firewallItem.name, ruleId);
+              }
             }
           }
 
@@ -376,46 +468,49 @@ export class NetworkAssociationsStack extends AcceleratorStack {
         // Route 53 query logging configuration associations
         //
         for (const configItem of vpcItem.queryLogs ?? []) {
+          // Throw error if centralNetworkConfig is undefined
+          if (!centralNetworkConfig) {
+            throw new Error('[network-associations-stack] centralNetworkServices is undefined');
+          }
+
           // Get VPC ID
           const vpcId = cdk.aws_ssm.StringParameter.valueForStringParameter(
             this,
             `/accelerator/network/vpc/${vpcItem.name}/id`,
           );
 
-          // Skip lookup if already added to map
-          if (queryLogMap.has(configItem)) {
-            continue;
+          // Determine query log destination(s)
+          const configNames: string[] = [];
+          if (centralNetworkConfig.route53Resolver?.queryLogs?.destinations.includes('s3')) {
+            configNames.push(`${configItem}-s3`);
+          }
+          if (centralNetworkConfig.route53Resolver?.queryLogs?.destinations.includes('cloud-watch-logs')) {
+            configNames.push(`${configItem}-cwl`);
           }
 
           if (centralNetworkConfig?.delegatedAdminAccount) {
             const owningAccountId = props.accountsConfig.getAccountId(centralNetworkConfig.delegatedAdminAccount);
 
-            // Determine query log destination(s)
-            const configNames: string[] = [];
-            if (centralNetworkConfig.route53Resolver?.queryLogs?.destinations.includes('s3')) {
-              configNames.push(`${configItem}-s3`);
-            }
-            if (centralNetworkConfig.route53Resolver?.queryLogs?.destinations.includes('cloud-watch-logs')) {
-              configNames.push(`${configItem}-cwl`);
-            }
-
             // Get SSM parameter if this is the owning account
             for (const nameItem of configNames) {
-              if (owningAccountId === cdk.Stack.of(this).account) {
-                const configId = cdk.aws_ssm.StringParameter.valueForStringParameter(
-                  this,
-                  `/accelerator/network/route53Resolver/queryLogConfigs/${nameItem}/id`,
-                );
-                queryLogMap.set(nameItem, configId);
-              } else {
-                // Get ID from the resource share
-                const configId = this.getResourceShare(
-                  vpcItem.name,
-                  `${nameItem}_QueryLogConfigShare`,
-                  'route53resolver:ResolverQueryLogConfig',
-                  owningAccountId,
-                ).resourceShareItemId;
-                queryLogMap.set(nameItem, configId);
+              // Skip lookup if already added to map
+              if (!queryLogMap.has(nameItem)) {
+                if (owningAccountId === cdk.Stack.of(this).account) {
+                  const configId = cdk.aws_ssm.StringParameter.valueForStringParameter(
+                    this,
+                    `/accelerator/network/route53Resolver/queryLogConfigs/${nameItem}/id`,
+                  );
+                  queryLogMap.set(nameItem, configId);
+                } else {
+                  // Get ID from the resource share
+                  const configId = this.getResourceShare(
+                    vpcItem.name,
+                    `${nameItem}_QueryLogConfigShare`,
+                    'route53resolver:ResolverQueryLogConfig',
+                    owningAccountId,
+                  ).resourceShareItemId;
+                  queryLogMap.set(nameItem, configId);
+                }
               }
             }
 
@@ -439,6 +534,11 @@ export class NetworkAssociationsStack extends AcceleratorStack {
         // Route 53 resolver rule associations
         //
         for (const ruleItem of vpcItem.resolverRules ?? []) {
+          // Throw error if centralNetworkConfig is undefined
+          if (!centralNetworkConfig) {
+            throw new Error('[network-associations-stack] centralNetworkServices is undefined');
+          }
+
           // Get VPC ID
           const vpcId = cdk.aws_ssm.StringParameter.valueForStringParameter(
             this,
@@ -446,29 +546,27 @@ export class NetworkAssociationsStack extends AcceleratorStack {
           );
 
           // Skip lookup if already added to map
-          if (resolverRuleMap.has(ruleItem)) {
-            continue;
-          }
+          if (!resolverRuleMap.has(ruleItem)) {
+            if (centralNetworkConfig?.delegatedAdminAccount) {
+              const owningAccountId = props.accountsConfig.getAccountId(centralNetworkConfig.delegatedAdminAccount);
 
-          if (centralNetworkConfig?.delegatedAdminAccount) {
-            const owningAccountId = props.accountsConfig.getAccountId(centralNetworkConfig.delegatedAdminAccount);
-
-            // Get SSM parameter if this is the owning account
-            if (owningAccountId === cdk.Stack.of(this).account) {
-              const ruleId = cdk.aws_ssm.StringParameter.valueForStringParameter(
-                this,
-                `/accelerator/network/route53Resolver/rules/${ruleItem}/id`,
-              );
-              resolverRuleMap.set(ruleItem, ruleId);
-            } else {
-              // Get ID from the resource share
-              const ruleId = this.getResourceShare(
-                vpcItem.name,
-                `${ruleItem}_ResolverRule`,
-                'route53resolver:ResolverRule',
-                owningAccountId,
-              ).resourceShareItemId;
-              resolverRuleMap.set(ruleItem, ruleId);
+              // Get SSM parameter if this is the owning account
+              if (owningAccountId === cdk.Stack.of(this).account) {
+                const ruleId = cdk.aws_ssm.StringParameter.valueForStringParameter(
+                  this,
+                  `/accelerator/network/route53Resolver/rules/${ruleItem}/id`,
+                );
+                resolverRuleMap.set(ruleItem, ruleId);
+              } else {
+                // Get ID from the resource share
+                const ruleId = this.getResourceShare(
+                  vpcItem.name,
+                  `${ruleItem}_ResolverRule`,
+                  'route53resolver:ResolverRule',
+                  owningAccountId,
+                ).resourceShareItemId;
+                resolverRuleMap.set(ruleItem, ruleId);
+              }
             }
           }
 
@@ -613,12 +711,11 @@ export class NetworkAssociationsStack extends AcceleratorStack {
     });
 
     // Represents the item shared by RAM
-    const item = ResourceShareItem.fromLookup(this, pascalCase(`${logicalId}`), {
+    return ResourceShareItem.fromLookup(this, pascalCase(`${logicalId}`), {
       resourceShare,
       resourceShareItemType: itemType,
       kmsKey: this.key,
       logRetentionInDays: this.logRetention,
     });
-    return item;
   }
 }

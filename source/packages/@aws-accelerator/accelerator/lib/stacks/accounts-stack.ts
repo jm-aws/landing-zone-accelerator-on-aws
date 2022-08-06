@@ -17,14 +17,8 @@ import { pascalCase } from 'change-case';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
-import {
-  Account,
-  EnablePolicyType,
-  Policy,
-  PolicyAttachment,
-  PolicyType,
-  PolicyTypeEnum,
-} from '@aws-accelerator/constructs';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { EnablePolicyType, Policy, PolicyAttachment, PolicyType, PolicyTypeEnum } from '@aws-accelerator/constructs';
 
 import { Logger } from '../logger';
 import { AcceleratorStack, AcceleratorStackProps } from './accelerator-stack';
@@ -60,6 +54,22 @@ export class AccountsStack extends AcceleratorStack {
         description: 'AWS Accelerator Management Account Kms Key',
         enableKeyRotation: true,
         removalPolicy: cdk.RemovalPolicy.RETAIN,
+      });
+
+      // Adding Backups to the permitted services for vaults
+      const allowedServicePrincipals: { name: string; principal: string }[] = [
+        { name: 'Backup', principal: 'backup.amazonaws.com' },
+      ];
+
+      allowedServicePrincipals.forEach(item => {
+        key.addToResourcePolicy(
+          new cdk.aws_iam.PolicyStatement({
+            sid: `Allow ${item.name} service to use the encryption key`,
+            principals: [new cdk.aws_iam.ServicePrincipal(item.principal)],
+            actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+            resources: ['*'],
+          }),
+        );
       });
 
       // Allow Accelerator Role to use the encryption key
@@ -113,21 +123,6 @@ export class AccountsStack extends AcceleratorStack {
           logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
         });
 
-        // Invite Accounts to Organization (GovCloud)
-        const accountMap: Map<string, Account> = new Map<string, Account>();
-        for (const account of [...props.accountsConfig.mandatoryAccounts, ...props.accountsConfig.workloadAccounts]) {
-          Logger.info(`[accounts-stack] Ensure ${account.name} is part of the Organization`);
-
-          const organizationAccount = new Account(this, pascalCase(`${account.name}OrganizationAccount`), {
-            accountId: props.accountsConfig.getAccountId(account.name),
-            assumeRoleName: props.globalConfig.managementAccountAccessRole,
-            kmsKey: key,
-            logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
-          });
-
-          accountMap.set(account.name, organizationAccount);
-        }
-
         // Deploy SCPs
         let quarantineScpId = '';
         for (const serviceControlPolicy of props.organizationConfig.serviceControlPolicies) {
@@ -171,21 +166,44 @@ export class AccountsStack extends AcceleratorStack {
           }
 
           for (const account of serviceControlPolicy.deploymentTargets.accounts ?? []) {
-            const policyAttachment = new PolicyAttachment(this, pascalCase(`Attach_${scp.name}_${account}`), {
+            new PolicyAttachment(this, pascalCase(`Attach_${scp.name}_${account}`), {
               policyId: scp.id,
               targetId: props.accountsConfig.getAccountId(account),
               type: PolicyType.SERVICE_CONTROL_POLICY,
               kmsKey: key,
               logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
             });
-
-            // Add dependency to ensure that account is part of the OU before
-            // attempting to add the SCP
-            const organizationAccount = accountMap.get(account);
-            if (organizationAccount) {
-              policyAttachment.node.addDependency(organizationAccount);
-            }
           }
+        }
+
+        if (props.securityConfig.accessAnalyzer.enable) {
+          Logger.debug('[accounts-stack] Enable Service Access for access-analyzer.amazonaws.com');
+          new iam.CfnServiceLinkedRole(this, 'AccessAnalyzerServiceLinkedRole', {
+            awsServiceName: 'access-analyzer.amazonaws.com',
+          });
+        }
+
+        if (props.securityConfig.centralSecurityServices.guardduty.enable) {
+          Logger.debug('[accounts-stack] Enable Service Access for guardduty.amazonaws.com');
+          new iam.CfnServiceLinkedRole(this, 'GuardDutyServiceLinkedRole', {
+            awsServiceName: 'guardduty.amazonaws.com',
+            description: 'A service-linked role required for Amazon GuardDuty to access your resources. ',
+          });
+        }
+
+        if (props.securityConfig.centralSecurityServices.securityHub.enable) {
+          Logger.debug('[accounts-stack] Enable Service Access for securityhub.amazonaws.com');
+          new iam.CfnServiceLinkedRole(this, 'SecurityHubServiceLinkedRole', {
+            awsServiceName: 'securityhub.amazonaws.com',
+            description: 'A service-linked role required for AWS Security Hub to access your resources.',
+          });
+        }
+
+        if (props.securityConfig.centralSecurityServices.macie.enable) {
+          Logger.debug('[accounts-stack] Enable Service Access for macie.amazonaws.com');
+          new iam.CfnServiceLinkedRole(this, 'MacieServiceLinkedRole', {
+            awsServiceName: 'macie.amazonaws.com',
+          });
         }
 
         if (props.organizationConfig.quarantineNewAccounts?.enable === true && props.partition == 'aws') {

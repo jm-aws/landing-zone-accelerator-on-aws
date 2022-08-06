@@ -106,6 +106,11 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
     // Iterate through VPCs in this account and region
     //
     const firewallMap = new Map<string, NetworkFirewall>();
+    const firewallLogBucket = cdk.aws_s3.Bucket.fromBucketName(
+      this,
+      'FirewallLogsBucket',
+      `aws-accelerator-central-logs-${this.accountsConfig.getLogArchiveAccountId()}-${this.globalConfig.homeRegion}`,
+    );
     for (const vpcItem of props.networkConfig.vpcs ?? []) {
       const accountId = this.accountsConfig.getAccountId(vpcItem.account);
       if (accountId === cdk.Stack.of(this).account && vpcItem.region === cdk.Stack.of(this).region) {
@@ -158,7 +163,13 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
 
               // Create firewall
               if (firewallSubnets.length > 0) {
-                const nfw = this.createNetworkFirewall(firewallItem, vpcId, firewallSubnets, owningAccountId);
+                const nfw = this.createNetworkFirewall(
+                  firewallItem,
+                  vpcId,
+                  firewallSubnets,
+                  firewallLogBucket,
+                  owningAccountId,
+                );
                 firewallMap.set(firewallItem.name, nfw);
               }
             }
@@ -171,7 +182,7 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
         for (const routeTableItem of vpcItem.routeTables ?? []) {
           // Check if endpoint routes exist
           for (const routeTableEntryItem of routeTableItem.routes ?? []) {
-            const id =
+            const endPointId =
               pascalCase(`${vpcItem.name}Vpc`) +
               pascalCase(`${routeTableItem.name}RouteTable`) +
               pascalCase(routeTableEntryItem.name);
@@ -188,10 +199,28 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
                 );
               }
 
+              if (!routeTableEntryItem.target) {
+                throw new Error(
+                  `[network-vpc-endpoints-stack] Network Firewall route ${routeTableEntryItem.name} for route table ${routeTableItem.name} must include a target`,
+                );
+              }
+
               // Check for AZ input
               if (!routeTableEntryItem.targetAvailabilityZone) {
                 throw new Error(
                   `[network-vpc-endpoints-stack] Network Firewall route table entry ${routeTableEntryItem.name} must specify a target availability zone`,
+                );
+              }
+
+              // Check if using a CIDR or prefix list as the destination
+              if (routeTableEntryItem.destinationPrefixList) {
+                throw new Error(
+                  `[network-vpc-endpoints-stack] ${routeTableEntryItem.name} using destinationPrefixList. Prefix list destinations cannot be used for networkFirewall targets.`,
+                );
+              }
+              if (!routeTableEntryItem.destination) {
+                throw new Error(
+                  `[network-vpc-endpoints-stack] ${routeTableEntryItem.name} does not have a destination defined`,
                 );
               }
 
@@ -208,16 +237,14 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
               Logger.info(
                 `[network-vpc-endpoints-stack] Adding Network Firewall Route Table Entry ${routeTableEntryItem.name}`,
               );
-              const routeOptions = {
-                id: id,
-                destination: routeTableEntryItem.destination,
-                endpointAz: endpointAz,
-                firewallArn: firewall.firewallArn,
-                kmsKey: this.acceleratorKey,
-                logRetention: this.logRetention,
-                routeTableId: routeTableId,
-              };
-              firewall.addNetworkFirewallRoute(routeOptions);
+              firewall.addNetworkFirewallRoute(
+                endPointId,
+                routeTableEntryItem.destination,
+                endpointAz,
+                this.acceleratorKey,
+                this.logRetention,
+                routeTableId,
+              );
             }
           }
         }
@@ -280,6 +307,7 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
     firewallItem: NfwFirewallConfig,
     vpcId: string,
     subnets: string[],
+    firewallLogBucket: cdk.aws_s3.IBucket,
     owningAccountId?: string,
   ): NetworkFirewall {
     // Get firewall policy ARN
@@ -321,7 +349,6 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
     );
 
     // Add logging configurations
-    let firewallLogBucket: cdk.aws_s3.IBucket | undefined;
     const destinationConfigs: cdk.aws_networkfirewall.CfnLoggingConfiguration.LogDestinationConfigProperty[] = [];
     for (const logItem of firewallItem.loggingConfiguration ?? []) {
       if (logItem.destination === 'cloud-watch-logs') {
@@ -346,16 +373,6 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
         Logger.info(
           `[network-vpc-endpoints-stack] Add S3 ${logItem.type} logs for Network Firewall ${firewallItem.name}`,
         );
-
-        if (!firewallLogBucket) {
-          firewallLogBucket = cdk.aws_s3.Bucket.fromBucketName(
-            this,
-            'FirewallLogsBucket',
-            `aws-accelerator-central-logs-${this.accountsConfig.getLogArchiveAccountId()}-${
-              this.globalConfig.homeRegion
-            }`,
-          );
-        }
 
         destinationConfigs.push({
           logDestination: {
@@ -480,6 +497,8 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
     let endpointSg: SecurityGroup | undefined;
     let port: number;
     let trafficType: string;
+    const privateDnsValue = !vpcItem.interfaceEndpoints?.central ?? true;
+
     for (const endpointItem of vpcItem.interfaceEndpoints?.endpoints ?? []) {
       Logger.info(`[network-vpc-endpoints-stack] Adding Interface Endpoint for ${endpointItem.service}`);
 
@@ -561,7 +580,7 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
         service: endpointItem.service,
         subnets,
         securityGroups: [endpointSg],
-        privateDnsEnabled: false,
+        privateDnsEnabled: privateDnsValue,
         policyDocument: this.createVpcEndpointPolicy(vpcItem, endpointItem),
       });
       new cdk.aws_ssm.StringParameter(this, pascalCase(`SsmParam${vpcItem.name}${endpointItem.service}Dns`), {
@@ -814,12 +833,11 @@ export class NetworkVpcEndpointsStack extends AcceleratorStack {
     });
 
     // Represents the item shared by RAM
-    const item = ResourceShareItem.fromLookup(this, pascalCase(`${logicalId}`), {
+    return ResourceShareItem.fromLookup(this, pascalCase(`${logicalId}`), {
       resourceShare,
       resourceShareItemType: itemType,
       kmsKey: this.acceleratorKey,
       logRetentionInDays: this.logRetention,
     });
-    return item;
   }
 }

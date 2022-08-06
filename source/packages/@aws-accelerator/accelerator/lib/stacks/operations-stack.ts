@@ -19,6 +19,7 @@ import * as path from 'path';
 
 import { Logger } from '../logger';
 import { AcceleratorStack, AcceleratorStackProps } from './accelerator-stack';
+import { BudgetDefinition } from '@aws-accelerator/constructs';
 
 export interface OperationsStackProps extends AcceleratorStackProps {
   configDirPath: string;
@@ -48,6 +49,19 @@ export class OperationsStack extends AcceleratorStack {
             ),
           },
         );
+      }
+
+      //
+      // Enable Budget Reports
+      //
+      if (props.globalConfig.reports?.budgets) {
+        for (const budgets of props.globalConfig.reports.budgets ?? []) {
+          if (this.isIncluded(budgets.deploymentTargets ?? [])) {
+            new BudgetDefinition(this, `${budgets.name}BudgetDefinition`, {
+              budgets: props.globalConfig.reports?.budgets,
+            });
+          }
+        }
       }
 
       //
@@ -254,8 +268,7 @@ export class OperationsStack extends AcceleratorStack {
             [
               {
                 id: 'AwsSolutions-SMG4',
-                reason:
-                  'Accelerator users created as per iam-config file, upcoming change will take care of secret automatic rotation',
+                reason: 'Accelerator users created as per iam-config file, MFA usage is enforced with boundary policy',
               },
             ],
           );
@@ -264,9 +277,10 @@ export class OperationsStack extends AcceleratorStack {
 
           new cdk.aws_iam.User(this, pascalCase(user.username), {
             userName: user.username,
-            password: secret.secretValue,
+            password: secret.secretValueFromJson('password'),
             groups: [groups[user.group]],
             permissionsBoundary: policies[user.boundaryPolicy],
+            passwordResetRequired: true,
           });
         }
       }

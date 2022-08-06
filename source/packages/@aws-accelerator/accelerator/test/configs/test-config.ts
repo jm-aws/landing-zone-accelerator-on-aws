@@ -11,7 +11,12 @@
  *  and limitations under the License.
  */
 
-import { GlobalConfig, IamConfig, NetworkConfig, SecurityConfig } from '@aws-accelerator/config';
+import {
+  GlobalConfig,
+  IamConfig,
+  NetworkConfig,
+  SecurityConfig,
+} from '@aws-accelerator/config';
 
 const globalConfigJson = {
   homeRegion: 'us-east-1',
@@ -236,6 +241,25 @@ const networkConfigJson = {
   ],
   centralNetworkServices: {
     delegatedAdminAccount: 'Audit',
+    ipams: [
+      {
+        name: 'Accelerator-IPAM',
+        region: 'us-east-1',
+        operatingRegions: ['us-east-1'],
+        pools: [
+          {
+            name: 'base-pool',
+            provisionedCidrs: ['10.0.0.0/8'],
+          },
+          {
+            name: 'us-east-1-pool',
+            locale: 'us-east-1',
+            provisionedCidrs: ['10.0.0.0/16'],
+            sourceIpamPool: 'base-pool',
+          },
+        ],
+      },
+    ],
     networkFirewall: {
       firewalls: [
         {
@@ -538,6 +562,41 @@ const networkConfigJson = {
       useCentralEndpoints: false,
       securityGroups: [],
     },
+    {
+      name: 'Test-Ipam',
+      account: 'Audit',
+      region: 'us-east-1',
+      ipamAllocations: [
+        {
+          ipamPoolName: 'us-east-1-pool',
+          netmaskLength: 24,
+        },
+      ],
+      internetGateway: true,
+      enableDnsHostnames: false,
+      enableDnsSupport: true,
+      instanceTenancy: 'default',
+      routeTables: [
+        {
+          name: 'Test-Ipam-Default',
+        },
+      ],
+      subnets: [
+        {
+          name: 'Ipam-Subnet',
+          availabilityZone: 'a',
+          routeTable: 'Test-Ipam-Default',
+          ipamAllocation: {
+            ipamPoolName: 'us-east-1-pool',
+            netmaskLength: 26,
+          },
+        },
+      ],
+      natGateways: [],
+      transitGatewayAttachments: [],
+      useCentralEndpoints: false,
+      securityGroups: [],
+    },
   ],
   vpcFlowLogs: {
     trafficType: 'ALL',
@@ -628,6 +687,18 @@ const securityConfigJson = {
         destinationType: 'S3',
         exportFrequency: 'FIFTEEN_MINUTES',
       },
+    },
+    auditManager: {
+      enable: true,
+      excludeRegions: [],
+      defaultReportsConfiguration: {
+        enable: true,
+        destinationType: 'S3',
+      },
+    },
+    detective: {
+      enable: true,
+      excludeRegions: [],
     },
     securityHub: {
       enable: true,
@@ -854,6 +925,10 @@ export const ORGANIZATION_CONFIG = {
       },
     },
   ],
+  backupVault: {
+    enableManagementKey: true,
+    name: 'DefaultVault',
+  },
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   loadOrganizationalUnitIds: async function (): Promise<void> {},
   getOrganizationalUnitId: function (name: string) {

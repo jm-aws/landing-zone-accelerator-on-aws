@@ -68,21 +68,21 @@ describe('OrganizationsStack', () => {
    * Number of IAM ServiceLinkedRole resource test
    */
   test(`${testNamePrefix} IAM ServiceLinkedRole resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::IAM::ServiceLinkedRole', 1);
+    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::IAM::ServiceLinkedRole', 0);
   });
 
   /**
    * Number of Lambda function resource test
    */
   test(`${testNamePrefix} Lambda function resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Lambda::Function', 10);
+    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Lambda::Function', 13);
   });
 
   /**
    * Number of Lambda IAM role resource test
    */
   test(`${testNamePrefix} Lambda IAM role resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::IAM::Role', 11);
+    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::IAM::Role', 14);
   });
 
   /**
@@ -128,20 +128,27 @@ describe('OrganizationsStack', () => {
   });
 
   /**
+   * Number of IPAM org admin test
+   */
+  test(`${testNamePrefix} IPAM organization admin account count test`, () => {
+    cdk.assertions.Template.fromStack(stack).resourceCountIs('Custom::EnableIpamOrganizationAdminAccount', 1);
+  });
+
+  /**
    * IAM ServiceLinkedRole AccessAnalyzerServiceLinkedRole  resource configuration test
    */
-  test(`${testNamePrefix} IAM ServiceLinkedRole AccessAnalyzerServiceLinkedRole resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        AccessAnalyzerServiceLinkedRole: {
-          Type: 'AWS::IAM::ServiceLinkedRole',
-          Properties: {
-            AWSServiceName: 'access-analyzer.amazonaws.com',
-          },
-        },
-      },
-    });
-  });
+  // test(`${testNamePrefix} IAM ServiceLinkedRole AccessAnalyzerServiceLinkedRole resource configuration test`, () => {
+  //   cdk.assertions.Template.fromStack(stack).templateMatches({
+  //     Resources: {
+  //       AccessAnalyzerServiceLinkedRole: {
+  //         Type: 'AWS::IAM::ServiceLinkedRole',
+  //         Properties: {
+  //           AWSServiceName: 'access-analyzer.amazonaws.com',
+  //         },
+  //       },
+  //     },
+  //   });
+  // });
 
   /**
    * Lambda function CustomEnableSharingWithAwsOrganizationCustomResourceProviderHandler resource configuration test
@@ -241,7 +248,7 @@ describe('OrganizationsStack', () => {
               'Fn::GetAtt': ['CustomGuardDutyEnableOrganizationAdminAccountCustomResourceProviderRole30371E09', 'Arn'],
             },
             Runtime: 'nodejs14.x',
-            Timeout: 900,
+            Timeout: 180,
           },
         },
       },
@@ -348,7 +355,7 @@ describe('OrganizationsStack', () => {
               'Fn::GetAtt': ['CustomMacieEnableOrganizationAdminAccountCustomResourceProviderRoleA386B194', 'Arn'],
             },
             Runtime: 'nodejs14.x',
-            Timeout: 900,
+            Timeout: 180,
           },
         },
       },
@@ -626,7 +633,7 @@ describe('OrganizationsStack', () => {
               ],
             },
             Runtime: 'nodejs14.x',
-            Timeout: 900,
+            Timeout: 180,
           },
         },
       },
@@ -728,6 +735,104 @@ describe('OrganizationsStack', () => {
                       Effect: 'Allow',
                       Resource: '*',
                       Sid: 'SecurityHubEnableOrganizationAdminAccountTaskSecurityHubActions',
+                    },
+                  ],
+                  Version: '2012-10-17',
+                },
+                PolicyName: 'Inline',
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  /**
+   * Lambda Function CustomEnableIpamOrganizationAdminAccountCustomResourceProviderHandler resource configuration test
+   */
+  test(`${testNamePrefix} Lambda Function CustomEnableIpamOrganizationAdminAccountCustomResourceProviderHandler resource configuration test`, () => {
+    cdk.assertions.Template.fromStack(stack).templateMatches({
+      Resources: {
+        CustomEnableIpamOrganizationAdminAccountCustomResourceProviderHandlerA3CAFE25: {
+          Type: 'AWS::Lambda::Function',
+          DependsOn: ['CustomEnableIpamOrganizationAdminAccountCustomResourceProviderRoleC4A018D1'],
+          Properties: {
+            Code: {
+              S3Bucket: 'cdk-hnb659fds-assets-333333333333-us-east-1',
+            },
+            Handler: '__entrypoint__.handler',
+            MemorySize: 128,
+            Role: {
+              'Fn::GetAtt': ['CustomEnableIpamOrganizationAdminAccountCustomResourceProviderRoleC4A018D1', 'Arn'],
+            },
+            Runtime: 'nodejs14.x',
+            Timeout: 900,
+          },
+        },
+      },
+    });
+  });
+
+  /**
+   * IAM role CustomEnableIpamOrganizationAdminAccountCustomResourceProviderRole resource configuration test
+   */
+  test(`${testNamePrefix} Lambda IAM role CustomEnableIpamOrganizationAdminAccountCustomResourceProviderRole resource configuration test`, () => {
+    cdk.assertions.Template.fromStack(stack).templateMatches({
+      Resources: {
+        CustomEnableIpamOrganizationAdminAccountCustomResourceProviderRoleC4A018D1: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            AssumeRolePolicyDocument: {
+              Statement: [
+                {
+                  Action: 'sts:AssumeRole',
+                  Effect: 'Allow',
+                  Principal: {
+                    Service: 'lambda.amazonaws.com',
+                  },
+                },
+              ],
+              Version: '2012-10-17',
+            },
+            ManagedPolicyArns: [
+              {
+                'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole',
+              },
+            ],
+            Policies: [
+              {
+                PolicyDocument: {
+                  Statement: [
+                    {
+                      Action: ['ec2:DisableIpamOrganizationAdminAccount', 'ec2:EnableIpamOrganizationAdminAccount'],
+                      Effect: 'Allow',
+                      Resource: '*',
+                    },
+                    {
+                      Action: [
+                        'organizations:DisableAwsServiceAccess',
+                        'organizations:EnableAwsServiceAccess',
+                        'organizations:DeregisterDelegatedAdministrator',
+                        'organizations:RegisterDelegatedAdministrator',
+                      ],
+                      Effect: 'Allow',
+                      Resource: '*',
+                      Condition: {
+                        StringLikeIfExists: {
+                          'organizations:ServicePrincipal': ['ipam.amazonaws.com'],
+                        },
+                      },
+                    },
+                    {
+                      Action: ['iam:CreateServiceLinkedRole', 'iam:DeleteServiceLinkedRole'],
+                      Effect: 'Allow',
+                      Resource: '*',
+                      Condition: {
+                        StringLikeIfExists: {
+                          'iam:AWSServiceName': ['ipam.amazonaws.com'],
+                        },
+                      },
                     },
                   ],
                   Version: '2012-10-17',
@@ -871,6 +976,27 @@ describe('OrganizationsStack', () => {
               ],
             },
             adminAccountId: '222222222222',
+            region: 'us-east-1',
+          },
+        },
+      },
+    });
+  });
+
+  /**
+   * IPAM org admin account resource configuration test
+   */
+  test(`${testNamePrefix} IPAM organization admin account custom resource configuration test`, () => {
+    cdk.assertions.Template.fromStack(stack).templateMatches({
+      Resources: {
+        IpamAdminAccountB45C9E06: {
+          Type: 'Custom::EnableIpamOrganizationAdminAccount',
+          DependsOn: ['CustomEnableIpamOrganizationAdminAccountCustomResourceProviderLogGroupB1C24203'],
+          Properties: {
+            ServiceToken: {
+              'Fn::GetAtt': ['CustomEnableIpamOrganizationAdminAccountCustomResourceProviderHandlerA3CAFE25', 'Arn'],
+            },
+            accountId: '222222222222',
             region: 'us-east-1',
           },
         },

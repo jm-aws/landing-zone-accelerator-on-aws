@@ -32,7 +32,8 @@ export class NetworkConfigTypes {
   });
 
   static readonly transitGatewayRouteEntryConfig = t.interface({
-    destinationCidrBlock: t.nonEmptyString,
+    destinationCidrBlock: t.optional(t.nonEmptyString),
+    destinationPrefixList: t.optional(t.nonEmptyString),
     blackhole: t.optional(t.boolean),
     attachment: t.optional(this.transitGatewayRouteTableVpcEntryConfig),
   });
@@ -58,6 +59,42 @@ export class NetworkConfigTypes {
     tags: t.optional(t.array(t.tag)),
   });
 
+  static readonly ipamScopeConfig = t.interface({
+    name: t.nonEmptyString,
+    description: t.optional(t.nonEmptyString),
+    tags: t.optional(t.array(t.tag)),
+  });
+
+  static readonly ipVersionEnum = t.enums('IpVersionType', ['ipv4', 'ipv6']);
+
+  static readonly ipamPoolConfig = t.interface({
+    name: t.nonEmptyString,
+    addressFamily: t.optional(this.ipVersionEnum),
+    scope: t.optional(t.nonEmptyString),
+    allocationDefaultNetmaskLength: t.optional(t.number),
+    allocationMaxNetmaskLength: t.optional(t.number),
+    allocationMinNetmaskLength: t.optional(t.number),
+    allocationResourceTags: t.optional(t.array(t.tag)),
+    autoImport: t.optional(t.boolean),
+    description: t.optional(t.nonEmptyString),
+    locale: t.optional(t.region),
+    provisionedCidrs: t.optional(t.array(t.nonEmptyString)),
+    publiclyAdvertisable: t.optional(t.boolean),
+    shareTargets: t.optional(t.shareTargets),
+    sourceIpamPool: t.optional(t.nonEmptyString),
+    tags: t.optional(t.array(t.tag)),
+  });
+
+  static readonly ipamConfig = t.interface({
+    name: t.nonEmptyString,
+    region: t.region,
+    description: t.optional(t.nonEmptyString),
+    operatingRegions: t.optional(t.array(t.region)),
+    scopes: t.optional(t.array(this.ipamScopeConfig)),
+    pools: t.optional(t.array(this.ipamPoolConfig)),
+    tags: t.optional(t.array(t.tag)),
+  });
+
   static readonly routeTableEntryTypeEnum = t.enums(
     'Type',
     [
@@ -75,8 +112,9 @@ export class NetworkConfigTypes {
   static readonly routeTableEntryConfig = t.interface({
     name: t.nonEmptyString,
     destination: t.optional(t.nonEmptyString),
+    destinationPrefixList: t.optional(t.nonEmptyString),
     type: t.optional(this.routeTableEntryTypeEnum),
-    target: t.nonEmptyString,
+    target: t.optional(t.nonEmptyString),
     targetAvailabilityZone: t.optional(t.nonEmptyString),
   });
 
@@ -86,12 +124,18 @@ export class NetworkConfigTypes {
     tags: t.optional(t.array(t.tag)),
   });
 
+  static readonly ipamAllocationConfig = t.interface({
+    ipamPoolName: t.nonEmptyString,
+    netmaskLength: t.number,
+  });
+
   static readonly subnetConfig = t.interface({
     name: t.nonEmptyString,
     availabilityZone: t.nonEmptyString,
     routeTable: t.nonEmptyString,
-    ipv4CidrBlock: t.nonEmptyString,
+    ipv4CidrBlock: t.optional(t.nonEmptyString),
     mapPublicIpOnLaunch: t.optional(t.boolean),
+    ipamAllocation: t.optional(this.ipamAllocationConfig),
     shareTargets: t.optional(t.shareTargets),
     tags: t.optional(t.array(t.tag)),
   });
@@ -293,7 +337,7 @@ export class NetworkConfigTypes {
     name: t.nonEmptyString,
     account: t.nonEmptyString,
     region: t.region,
-    cidrs: t.array(t.nonEmptyString),
+    cidrs: t.optional(t.array(t.nonEmptyString)),
     dhcpOptions: t.optional(t.nonEmptyString),
     dnsFirewallRuleGroups: t.optional(t.array(this.vpcDnsFirewallAssociationConfig)),
     enableDnsHostnames: t.optional(t.boolean),
@@ -302,6 +346,7 @@ export class NetworkConfigTypes {
     instanceTenancy: t.optional(this.instanceTenancyTypeEnum),
     interfaceEndpoints: t.optional(this.interfaceEndpointConfig),
     internetGateway: t.optional(t.boolean),
+    ipamAllocations: t.optional(t.array(this.ipamAllocationConfig)),
     natGateways: t.optional(t.array(this.natGatewayConfig)),
     useCentralEndpoints: t.optional(t.boolean),
     securityGroups: t.optional(t.array(this.securityGroupConfig)),
@@ -345,6 +390,7 @@ export class NetworkConfigTypes {
   static readonly resolverRuleConfig = t.interface({
     name: t.nonEmptyString,
     domainName: t.nonEmptyString,
+    excludedRegions: t.optional(t.array(t.region)),
     inboundEndpointTarget: t.optional(t.nonEmptyString),
     ruleType: t.optional(this.ruleTypeEnum),
     shareTargets: t.optional(t.shareTargets),
@@ -406,6 +452,7 @@ export class NetworkConfigTypes {
     endpoints: t.optional(t.array(this.resolverEndpointConfig)),
     firewallRuleGroups: t.optional(t.array(this.dnsFirewallRuleGroupConfig)),
     queryLogs: t.optional(this.dnsQueryLogsConfig),
+    rules: t.optional(t.array(this.resolverRuleConfig)),
   });
 
   static readonly nfwRuleType = t.enums('NfwRuleType', ['STATEFUL', 'STATELESS']);
@@ -615,6 +662,7 @@ export class NetworkConfigTypes {
 
   static readonly centralNetworkServicesConfig = t.interface({
     delegatedAdminAccount: t.nonEmptyString,
+    ipams: t.optional(t.array(this.ipamConfig)),
     route53Resolver: t.optional(this.resolverConfig),
     networkFirewall: t.optional(this.nfwConfig),
   });
@@ -683,7 +731,11 @@ export class TransitGatewayRouteEntryConfig
    * @remarks
    * Use CIDR notation, i.e. 10.0.0.0/16
    */
-  readonly destinationCidrBlock = '';
+  readonly destinationCidrBlock: string | undefined = undefined;
+  /**
+   * The friendly name of a prefix list for the route table entry.
+   */
+  readonly destinationPrefixList: string | undefined = undefined;
   /**
    * Enable to create a blackhole for the destination CIDR.
    * Leave undefined if specifying a VPC destination.
@@ -806,6 +858,157 @@ export class TransitGatewayConfig implements t.TypeOf<typeof NetworkConfigTypes.
 }
 
 /**
+ * IPAM scope configuration.
+ * Used to define a custom IPAM scope.
+ */
+export class IpamScopeConfig implements t.TypeOf<typeof NetworkConfigTypes.ipamScopeConfig> {
+  /**
+   * A friendly name for the IPAM scope.
+   */
+  readonly name: string = '';
+  /**
+   * An optional description for the IPAM scope.
+   */
+  readonly description: string | undefined = undefined;
+  /**
+   * An array of tag objects for the IPAM scope.
+   */
+  readonly tags: t.Tag[] | undefined = undefined;
+}
+
+/**
+ * IPAM pool configuration.
+ * Used to define an IPAM pool.
+ */
+export class IpamPoolConfig implements t.TypeOf<typeof NetworkConfigTypes.ipamPoolConfig> {
+  /**
+   * The address family for the IPAM pool.
+   *
+   * @see {@link NetworkConfigTypes.ipVersionEnum}
+   */
+  readonly addressFamily: t.TypeOf<typeof NetworkConfigTypes.ipVersionEnum> | undefined = 'ipv4';
+  /**
+   * A friendly name for the IPAM pool.
+   */
+  readonly name: string = '';
+  /**
+   * The friendly name of the IPAM scope to assign the IPAM pool to.
+   *
+   * @remarks
+   * Leave this property undefined to create the pool in the default scope.
+   */
+  readonly scope: string | undefined = undefined;
+  /**
+   * The default netmask length of IPAM allocations for this pool.
+   */
+  readonly allocationDefaultNetmaskLength: number | undefined = undefined;
+  /**
+   * The maximum netmask length of IPAM allocations for this pool.
+   */
+  readonly allocationMaxNetmaskLength: number | undefined = undefined;
+  /**
+   * The minimum netmask length of IPAM allocations for this pool.
+   */
+  readonly allocationMinNetmaskLength: number | undefined = undefined;
+  /**
+   * An optional array of tags that are required for resources that use CIDRs from this IPAM pool.
+   *
+   * @remarks
+   * Resources that do not have these tags will not be allowed to allocate space from the pool.
+   */
+  readonly allocationResourceTags: t.Tag[] | undefined = undefined;
+  /**
+   * If set to `true`, IPAM will continuously look for resources within the CIDR range of this pool
+   * and automatically import them as allocations into your IPAM.
+   */
+  readonly autoImport: boolean | undefined = undefined;
+  /**
+   * A description for the IPAM pool.
+   */
+  readonly description: string | undefined = undefined;
+  /**
+   * The AWS Region where you want to make an IPAM pool available for allocations.
+   *
+   * @remarks
+   * Only resources in the same Region as the locale of the pool can get IP address allocations from the pool.
+   */
+  readonly locale: t.Region | undefined = undefined;
+  /**
+   * An array of CIDR ranges to provision for the IPAM pool.
+   *
+   * @remarks
+   * Use CIDR notation, i.e. 10.0.0.0/16
+   */
+  readonly provisionedCidrs: string[] | undefined = undefined;
+  /**
+   * Determines if a pool is publicly advertisable.
+   *
+   * @remarks
+   * This option is not available for pools with AddressFamily set to ipv4.
+   */
+  readonly publiclyAdvertisable: boolean | undefined = undefined;
+  /**
+   * Resource Access Manager (RAM) share targets.
+   *
+   * @remarks
+   * Targets can be account names and/or organizational units.
+   *
+   * @see {@link t.ShareTargets}
+   */
+  readonly shareTargets: t.ShareTargets = new t.ShareTargets();
+  /**
+   * The friendly name of the source IPAM pool to create this IPAM pool from.
+   *
+   * @remarks
+   * Only define this value when creating nested IPAM pools. Leave undefined for top-level pools.
+   */
+  readonly sourceIpamPool: string | undefined = undefined;
+  /**
+   * An array of tag objects for the IPAM pool.
+   */
+  readonly tags: t.Tag[] | undefined = undefined;
+}
+
+export class IpamConfig implements t.TypeOf<typeof NetworkConfigTypes.ipamConfig> {
+  /**
+   * A friendly name for the IPAM.
+   */
+  readonly name: string = '';
+  /**
+   * The region to deploy the IPAM.
+   *
+   * @remarks
+   * Note that IPAMs must be deployed to a single region but may manage multiple regions.
+   * Configure the `operatingRegions` property to define multiple regions to manage.
+   */
+  readonly region: t.Region = 'us-east-1';
+  /**
+   * A description for the IPAM.
+   */
+  readonly description: string | undefined = undefined;
+  /**
+   * An array of regions that the IPAM will manage.
+   */
+  readonly operatingRegions: t.Region[] | undefined = undefined;
+  /**
+   * An optional array of IPAM scope configurations to create under the IPAM.
+   *
+   * @see {@link IpamScopeConfig}
+   */
+  readonly scopes: IpamScopeConfig[] | undefined = undefined;
+  /**
+   * An optional array of IPAM pool configurations to create under the IPAM.
+   *
+   * @see {@link IpamPoolConfig}
+   */
+  readonly pools: IpamPoolConfig[] | undefined = undefined;
+  /**
+   * An array of tag objects for the IPAM.
+   */
+  readonly tags: t.Tag[] | undefined = undefined;
+}
+
+/**
  * VPC route table entry configuration.
  * Used to define static route entries in a VPC route table.
  */
@@ -819,8 +1022,27 @@ export class RouteTableEntryConfig implements t.TypeOf<typeof NetworkConfigTypes
    *
    * @remarks
    * Use CIDR notation, i.e. 10.0.0.0/16
+   *
+   * Either `destination` or `destinationPrefixList` must be specified for the following route entry types:
+   * `transitGateway`, `natGateway`, `internetGateway`, `networkInterface`.
+   *
+   * `destination` MUST be specified for route entry type `networkFirewall`.
+   *
+   * Leave undefined for route entry type `gatewayEndpoint`.
    */
-  readonly destination: string = '';
+  readonly destination: string | undefined = undefined;
+  /**
+   * The friendly name of the destination prefix list for the route table entry.
+   *
+   * @remarks
+   * Either `destination` or `destinationPrefixList` must be specified for the following route entry types:
+   * `transitGateway`, `natGateway`, `internetGateway`, `networkInterface`.
+   *
+   * Cannot be specified for route entry type `networkFirewall`. Use `destination` instead.
+   *
+   * Leave undefined for route entry type `gatewayEndpoint`.
+   */
+  readonly destinationPrefixList: string | undefined = undefined;
   /**
    * The destination type of route table entry.
    *
@@ -829,15 +1051,20 @@ export class RouteTableEntryConfig implements t.TypeOf<typeof NetworkConfigTypes
   readonly type: t.TypeOf<typeof NetworkConfigTypes.routeTableEntryTypeEnum> | undefined = undefined;
   /**
    * The friendly name of the destination target.
+   *
+   * @remarks
+   * Use `s3` or `dynamodb` as the string when specifying a route entry type of `gatewayEndpoint`.
+   *
+   * Leave undefined for route entry type `internetGateway`.
    */
-  readonly target: string = '';
+  readonly target: string | undefined = undefined;
   /**
    * The Availability Zone (AZ) the target resides in.
    *
    * @remarks
    * Include only the letter of the AZ name (i.e. 'a' for 'us-east-1a').
    *
-   * Leave undefined for targets of types other than `networkFirewall`.
+   * Leave undefined for targets of route entry types other than `networkFirewall`.
    */
   readonly targetAvailabilityZone: string | undefined = undefined;
 }
@@ -884,12 +1111,22 @@ export class SubnetConfig implements t.TypeOf<typeof NetworkConfigTypes.subnetCo
    */
   readonly routeTable = '';
   /**
+   * The IPAM pool configuration for the subnet.
+   *
+   * @see {@link IpamAllocationConfig}
+   *
+   * @remarks
+   * Must be using AWS-managed IPAM and allocate a CIDR to the VPC this subnet will be created in.
+   * Define IPAM configuration in `centralNetworkServices`. @see {@link CentralNetworkServicesConfig}
+   */
+  readonly ipamAllocation: IpamAllocationConfig | undefined = undefined;
+  /**
    * The IPv4 CIDR block to associate with the subnet.
    *
    * @remarks
    * Use CIDR notation, i.e. 10.0.0.0/16
    */
-  readonly ipv4CidrBlock = '';
+  readonly ipv4CidrBlock: string | undefined = undefined;
   /**
    * Configure automatic mapping of public IPs.
    *
@@ -1394,6 +1631,21 @@ export class NetworkAclConfig implements t.TypeOf<typeof NetworkConfigTypes.netw
   readonly tags: t.Tag[] | undefined = undefined;
 }
 
+export class IpamAllocationConfig implements t.TypeOf<typeof NetworkConfigTypes.ipamAllocationConfig> {
+  /**
+   * The IPAM Pool name to request the allocation from.
+   */
+  readonly ipamPoolName: string = '';
+
+  /**
+   * The subnet mask length to request.
+   *
+   * @remarks
+   * Specify only the CIDR prefix length for the subnet, i.e. 24.
+   */
+  readonly netmaskLength: number = 24;
+}
+
 /**
  * DHCP options configuration.
  * Used to define a custom DHCP options set.
@@ -1484,11 +1736,11 @@ export class VpcConfig implements t.TypeOf<typeof NetworkConfigTypes.vpcConfig> 
    *
    * @remarks
    * At least one CIDR should be
-   * provided.
+   * provided if not using `ipamAllocation`.
    *
    * Use CIDR notation, i.e. 10.0.0.0/16
    */
-  readonly cidrs: string[] = [];
+  readonly cidrs: string[] | undefined = undefined;
 
   /**
    * The friendly name of a DHCP options set.
@@ -1520,6 +1772,13 @@ export class VpcConfig implements t.TypeOf<typeof NetworkConfigTypes.vpcConfig> 
    * Define instance tenancy for the VPC.
    */
   readonly instanceTenancy: t.TypeOf<typeof NetworkConfigTypes.instanceTenancyTypeEnum> | undefined = 'default';
+
+  /**
+   * An optional array of IPAM allocation configurations.
+   *
+   * @see {@link IpamAllocationConfig}
+   */
+  readonly ipamAllocations: IpamAllocationConfig[] | undefined = undefined;
 
   /**
    * An optional list of DNS query log configuration names.
@@ -1669,6 +1928,14 @@ export class ResolverRuleConfig implements t.TypeOf<typeof NetworkConfigTypes.re
    * The domain name for the resolver rule.
    */
   readonly domainName: string = '';
+  /**
+   * Regions to exclude from deployment.
+   *
+   * @remarks
+   * Only define this property if creating a `SYSTEM` rule type.
+   * This does not apply to rules of type `FORWARD`.
+   */
+  readonly excludedRegions: t.Region[] | undefined = undefined;
   /**
    * The friendly name of an inbound endpoint to target.
    *
@@ -1877,6 +2144,14 @@ export class ResolverConfig implements t.TypeOf<typeof NetworkConfigTypes.resolv
    * @see {@link DnsQueryLogsConfig}
    */
   readonly queryLogs: DnsQueryLogsConfig | undefined = undefined;
+  /**
+   * An optional array of Route 53 resolver rules.
+   *
+   * @remarks
+   * This `rules` object should only be used for rules of type `SYSTEM`.
+   * For rules of type `FORWARD`, define under the `endpoints` configuration object.
+   */
+  readonly rules: ResolverRuleConfig[] | undefined = undefined;
 }
 
 /**
@@ -2629,6 +2904,12 @@ export class CentralNetworkServicesConfig implements t.TypeOf<typeof NetworkConf
    */
   readonly delegatedAdminAccount: string = '';
   /**
+   * An array of IPAM configurations.
+   *
+   * @see {@link IpamConfig}
+   */
+  readonly ipams: IpamConfig[] | undefined = undefined;
+  /**
    * A Route 53 resolver configuration.
    *
    * @see {@link ResolverConfig}
@@ -2686,6 +2967,7 @@ export class NetworkConfig implements t.TypeOf<typeof NetworkConfigTypes.network
   readonly transitGateways: TransitGatewayConfig[] = [];
 
   /**
+   * A list of VPC configurations.
    * An array of VPC endpoint policies.
    *
    * @see {@link EndpointPolicyConfig}
@@ -2721,6 +3003,11 @@ export class NetworkConfig implements t.TypeOf<typeof NetworkConfigTypes.network
   readonly centralNetworkServices: CentralNetworkServicesConfig | undefined = undefined;
 
   /**
+   * An optional list of prefix list set configurations.
+   */
+  readonly prefixLists: PrefixListConfig[] | undefined = undefined;
+
+  /**
    * An optional list of VPC peering configurations
    *
    * @see {@link VpcPeeringConfig}
@@ -2731,16 +3018,59 @@ export class NetworkConfig implements t.TypeOf<typeof NetworkConfigTypes.network
    *
    * @param values
    */
-  constructor(values?: t.TypeOf<typeof NetworkConfigTypes.networkConfig>) {
+  constructor(values?: t.TypeOf<typeof NetworkConfigTypes.networkConfig>, configDir?: string) {
+    //
+    // Validation errors
+    //
+    const errors: string[] = [];
+
     if (values) {
+      //
+      // Endpoint policy validation
+      //
+      const endpointPolicies: { name: string; document: string }[] = [];
+      for (const policy of values.endpointPolicies ?? []) {
+        endpointPolicies.push(policy);
+      }
+
+      //
+      // DNS firewall custom domain list validation
+      //
+      const domainLists: { name: string; document: string }[] = [];
+      for (const ruleGroup of values.centralNetworkServices?.route53Resolver?.firewallRuleGroups ?? []) {
+        for (const rule of ruleGroup.rules) {
+          if (rule.customDomainList) {
+            domainLists.push({ name: rule.name, document: rule.customDomainList });
+          }
+        }
+      }
+
+      //
+      // Validate documents exist
+      //
+      if (configDir) {
+        // Endpoint policies
+        for (const policy of endpointPolicies) {
+          if (!fs.existsSync(path.join(configDir, policy.document))) {
+            errors.push(`Endpoint policy ${policy.name} document file ${policy.document} not found!`);
+          }
+        }
+
+        // Custom domain lists
+        for (const list of domainLists) {
+          if (!fs.existsSync(path.join(configDir, list.document))) {
+            errors.push(`DNS firewall custom domain list ${list.name} document file ${list.document} not found!`);
+          }
+        }
+      }
+
+      if (errors.length) {
+        throw new Error(`${NetworkConfig.FILENAME} has ${errors.length} issues: ${errors.join(' ')}`);
+      }
+
       Object.assign(this, values);
     }
   }
-
-  /**
-   * An optional list of prefix list set configurations.
-   */
-  readonly prefixLists: PrefixListConfig[] | undefined = undefined;
 
   /**
    *
@@ -2750,7 +3080,7 @@ export class NetworkConfig implements t.TypeOf<typeof NetworkConfigTypes.network
   static load(dir: string): NetworkConfig {
     const buffer = fs.readFileSync(path.join(dir, NetworkConfig.FILENAME), 'utf8');
     const values = t.parse(NetworkConfigTypes.networkConfig, yaml.load(buffer));
-    return new NetworkConfig(values);
+    return new NetworkConfig(values, dir);
   }
 
   /**

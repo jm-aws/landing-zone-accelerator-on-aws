@@ -66,7 +66,8 @@ process.on(
 export class GovCloudOverrides implements cdk.IAspect {
   public visit(node: IConstruct): void {
     if (node instanceof cdk.aws_logs.CfnLogGroup) {
-      node.addPropertyDeletionOverride('KmsKeyId'), node.addPropertyDeletionOverride('Tags');
+      node.addPropertyDeletionOverride('KmsKeyId');
+      node.addPropertyDeletionOverride('Tags');
     }
   }
 }
@@ -74,16 +75,17 @@ export class GovCloudOverrides implements cdk.IAspect {
 export class IsobOverrides implements cdk.IAspect {
   public visit(node: IConstruct): void {
     if (node instanceof cdk.aws_ec2.CfnFlowLog) {
-      node.addPropertyDeletionOverride('LogFormat'),
-        node.addPropertyDeletionOverride('Tags'),
-        node.addPropertyDeletionOverride('MaxAggregationInterval');
+      node.addPropertyDeletionOverride('LogFormat');
+      node.addPropertyDeletionOverride('Tags');
+      node.addPropertyDeletionOverride('MaxAggregationInterval');
     }
     if (node instanceof cdk.aws_logs.CfnLogGroup) {
-      node.addPropertyDeletionOverride('KmsKeyId'), node.addPropertyDeletionOverride('Tags');
+      node.addPropertyDeletionOverride('KmsKeyId');
+      node.addPropertyDeletionOverride('Tags');
     }
     if (node instanceof cdk.aws_s3.CfnBucket) {
-      node.addPropertyDeletionOverride('PublicAccessBlockConfiguration'),
-        node.addPropertyDeletionOverride('OwnershipControls');
+      node.addPropertyDeletionOverride('PublicAccessBlockConfiguration');
+      node.addPropertyDeletionOverride('OwnershipControls');
     }
   }
 }
@@ -164,6 +166,7 @@ async function main() {
         sourceRepositoryName,
         sourceBranchName,
         enableApprovalStage,
+        terminationProtection: true,
         qualifier: process.env['ACCELERATOR_QUALIFIER'],
         managementAccountId: process.env['MANAGEMENT_ACCOUNT_ID']!,
         managementAccountRoleName: process.env['MANAGEMENT_ACCOUNT_ROLE_NAME']!,
@@ -195,6 +198,7 @@ async function main() {
           qualifier: process.env['ACCELERATOR_QUALIFIER'],
           managementAccountId: process.env['MANAGEMENT_ACCOUNT_ID'],
           managementAccountRoleName: process.env['MANAGEMENT_ACCOUNT_ROLE_NAME'],
+          terminationProtection: true,
         },
       );
     }
@@ -246,6 +250,7 @@ async function main() {
         synthesizer: new cdk.DefaultStackSynthesizer({
           generateBootstrapVersionRule: false,
         }),
+        terminationProtection: props.globalConfig.terminationProtection ?? true,
         ...props,
       });
     }
@@ -266,6 +271,7 @@ async function main() {
           synthesizer: new cdk.DefaultStackSynthesizer({
             generateBootstrapVersionRule: false,
           }),
+          terminationProtection: props.globalConfig.terminationProtection ?? true,
           ...props,
         },
       );
@@ -284,6 +290,7 @@ async function main() {
             region: globalRegion,
           },
           description: `(SO0199-accounts) Landing Zone Accelerator on AWS. Version ${version}.`,
+          terminationProtection: props.globalConfig.terminationProtection ?? true,
           ...props,
         },
       );
@@ -305,6 +312,7 @@ async function main() {
               region: enabledRegion,
             },
             description: `(SO0199-organizations) Landing Zone Accelerator on AWS. Version ${version}.`,
+            terminationProtection: props.globalConfig.terminationProtection ?? true,
             ...props,
           },
         );
@@ -322,6 +330,7 @@ async function main() {
             region: enabledRegion,
           },
           description: `(SO0199-key) Landing Zone Accelerator on AWS. Version ${version}.`,
+          terminationProtection: props.globalConfig.terminationProtection ?? true,
           ...props,
         });
       }
@@ -336,6 +345,7 @@ async function main() {
               region: enabledRegion,
             },
             description: `(SO0199-securityaudit) Landing Zone Accelerator on AWS. Version ${version}.`,
+            terminationProtection: props.globalConfig.terminationProtection ?? true,
             ...props,
           },
         );
@@ -365,6 +375,7 @@ async function main() {
             synthesizer: new cdk.DefaultStackSynthesizer({
               generateBootstrapVersionRule: false,
             }),
+            terminationProtection: props.globalConfig.terminationProtection ?? true,
             ...props,
           });
         }
@@ -379,6 +390,7 @@ async function main() {
             synthesizer: new cdk.DefaultStackSynthesizer({
               generateBootstrapVersionRule: false,
             }),
+            terminationProtection: props.globalConfig.terminationProtection ?? true,
             ...props,
           });
         }
@@ -396,6 +408,7 @@ async function main() {
               synthesizer: new cdk.DefaultStackSynthesizer({
                 generateBootstrapVersionRule: false,
               }),
+              terminationProtection: props.globalConfig.terminationProtection ?? true,
               ...props,
             },
           );
@@ -414,6 +427,7 @@ async function main() {
               synthesizer: new cdk.DefaultStackSynthesizer({
                 generateBootstrapVersionRule: false,
               }),
+              terminationProtection: props.globalConfig.terminationProtection ?? true,
               ...props,
             },
           );
@@ -432,6 +446,7 @@ async function main() {
               synthesizer: new cdk.DefaultStackSynthesizer({
                 generateBootstrapVersionRule: false,
               }),
+              terminationProtection: props.globalConfig.terminationProtection ?? true,
               ...props,
             },
           );
@@ -450,6 +465,7 @@ async function main() {
               synthesizer: new cdk.DefaultStackSynthesizer({
                 generateBootstrapVersionRule: false,
               }),
+              terminationProtection: props.globalConfig.terminationProtection ?? true,
               ...props,
             },
           );
@@ -463,6 +479,7 @@ async function main() {
               synthesizer: new cdk.DefaultStackSynthesizer({
                 generateBootstrapVersionRule: false,
               }),
+              terminationProtection: props.globalConfig.terminationProtection ?? true,
               ...props,
             },
           );
@@ -496,6 +513,7 @@ async function main() {
               synthesizer: new cdk.DefaultStackSynthesizer({
                 generateBootstrapVersionRule: false,
               }),
+              terminationProtection: props.globalConfig.terminationProtection ?? true,
               ...props,
             },
           );

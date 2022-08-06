@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as yaml from 'js-yaml';
 import * as path from 'path';
 
+import * as emailValidator from 'email-validator';
 import * as t from './common-types';
 
 /**
@@ -102,6 +103,7 @@ export abstract class GlobalConfigTypes {
     useBlended: t.optional(t.boolean),
     unit: t.optional(t.nonEmptyString),
     notifications: t.optional(t.array(this.notificationConfig)),
+    deploymentTargets: t.optional(t.deploymentTargets),
   });
 
   static readonly reportConfig = t.interface({
@@ -114,6 +116,7 @@ export abstract class GlobalConfigTypes {
     enabledRegions: t.array(t.region),
     managementAccountAccessRole: t.nonEmptyString,
     cloudwatchLogRetentionInDays: t.number,
+    terminationProtection: t.optional(t.boolean),
     controlTower: GlobalConfigTypes.controlTowerConfig,
     logging: GlobalConfigTypes.loggingConfig,
     reports: t.optional(GlobalConfigTypes.reportConfig),
@@ -380,6 +383,10 @@ export class BudgetReportConfig implements t.TypeOf<typeof GlobalConfigTypes.bud
       subscriptionType: '',
     },
   ];
+  /**
+   * List of OU's and accounts to be configured for Budgets configuration
+   */
+  readonly deploymentTargets: t.DeploymentTargets = new t.DeploymentTargets();
 }
 
 /**
@@ -501,6 +508,11 @@ export class GlobalConfig implements t.TypeOf<typeof GlobalConfigTypes.globalCon
   readonly cloudwatchLogRetentionInDays = 3653;
 
   /**
+   * Whether to enable termination protection for this stack.
+   */
+  readonly terminationProtection = true;
+
+  /**
    * AWS ControlTower configuration
    *
    * To indicate environment has control tower enabled, you need to provide below value for this parameter.
@@ -575,6 +587,11 @@ export class GlobalConfig implements t.TypeOf<typeof GlobalConfigTypes.globalCon
    */
   readonly reports: ReportConfig | undefined = undefined;
 
+  //
+  // Validation errors
+  //
+  private readonly errors: string[] = [];
+
   /**
    *
    * @param props
@@ -588,18 +605,32 @@ export class GlobalConfig implements t.TypeOf<typeof GlobalConfigTypes.globalCon
   ) {
     if (values) {
       Object.assign(this, values);
+
+      //
+      // budget notification email validation
+      //
+      this.validateBudgetNotificationEmailIds(values);
     } else {
       this.homeRegion = props.homeRegion;
       this.enabledRegions = [props.homeRegion as t.Region];
     }
 
-    //
-    // Validation errors
-    //
-    const errors: string[] = [];
+    if (this.errors.length) {
+      throw new Error(`${GlobalConfig.FILENAME} has ${this.errors.length} issues: ${this.errors.join(' ')}`);
+    }
+  }
 
-    if (errors.length) {
-      throw new Error(`${GlobalConfig.FILENAME} has ${errors.length} issues: ${errors.join(' ')}`);
+  /**
+   * Function to validate budget notification email address
+   * @param values
+   */
+  private validateBudgetNotificationEmailIds(values: t.TypeOf<typeof GlobalConfigTypes.globalConfig>) {
+    for (const budget of values.reports?.budgets ?? []) {
+      for (const notification of budget.notifications ?? []) {
+        if (!emailValidator.validate(notification.address!)) {
+          this.errors.push(`Invalid report notification email ${notification.address!}.`);
+        }
+      }
     }
   }
 

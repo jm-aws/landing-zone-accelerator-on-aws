@@ -1,10 +1,11 @@
 {
   "name": "@aws-accelerator/installer",
   "version": "0.0.0",
+  "description": "The installer package for the accelerator solution.",
   "license": "Apache-2.0",
   "author": {
     "name": "Amazon Web Services",
-    "url": "https://aws.amazon.com"
+    "url": "https://aws.amazon.com/solutions"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,8 +21,8 @@
     "precommit": "eslint --max-warnings 0 -c ../../../.eslintrc.json 'lib/**/*.{ts,tsx}' 'test/**/*.{ts,tsx}' --ignore-pattern \"*.d.ts\" "
   },
   "devDependencies": {
-    "aws-cdk-lib": "2.16.0",
-    "aws-cdk": "2.16.0",
+    "aws-cdk-lib": "2.25.0",
+    "aws-cdk": "2.25.0",
     "constructs": "10.0.12",
     "@types/jest": "27.0.3",
     "@types/node": "16.11.12",
@@ -32,17 +33,23 @@
     "eslint-plugin-node": "11.1.0",
     "eslint-plugin-prettier": "4.0.0",
     "jest": "27.4.3",
+    "jest-sonar-reporter": "2.0.0",
     "lint-staged": "12.1.2",
     "prettier": "2.5.1",
     "ts-jest": "27.1.1",
-    "ts-node": "10.4.0",
+    "ts-node": "10.7.0",
     "typescript": "4.5.2"
+  },
+  "jestSonar": {
+    "reportPath": "coverage",
+    "reportFile": "test-report.xml",
+    "indent": 4
   },
   "dependencies": {
     "@aws-cdk-extensions/cdk-extensions": "^0.0.0",
     "@aws-accelerator/accelerator": "^0.0.0",
-    "aws-cdk-lib": "2.16.0",
-    "aws-cdk": "2.16.0",
+    "aws-cdk-lib": "2.25.0",
+    "aws-cdk": "2.25.0",
     "cdk-nag": "2.5.2"
   }
 }

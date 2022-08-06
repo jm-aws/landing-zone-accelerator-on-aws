@@ -11,10 +11,11 @@
  *  and limitations under the License.
  */
 
-import * as t from './common-types';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as yaml from 'js-yaml';
+import * as path from 'path';
+
+import * as t from './common-types';
 
 /**
  * AWS Accelerator SecurityConfig Types
@@ -130,6 +131,56 @@ export class SecurityConfigTypes {
   });
 
   /**
+   * AWS Audit Manager Default Report configuration.
+   */
+  static readonly auditManagerDefaultReportsDestinationConfig = t.interface({
+    /**
+     * Indicates whether AWS GuardDuty Export Findings enabled.
+     */
+    enable: t.boolean,
+    /**
+     * The type of resource for the publishing destination. Currently only Amazon S3 buckets are supported.
+     */
+    destinationType: t.enums('DestinationType', ['S3']),
+  });
+
+  /**
+   * AWS Audit Manager configuration
+   */
+  static readonly auditManagerConfig = t.interface({
+    /**
+     * Indicates whether AWS Audit Manager enabled.
+     */
+    enable: t.boolean,
+    /**
+     * List of AWS Region names to be excluded from configuring Amazon GuardDuty S3 Protection
+     */
+    excludeRegions: t.optional(t.array(t.region)),
+    /**
+     * AWS GuardDuty Export Findings configuration.
+     */
+    defaultReportsConfiguration: this.auditManagerDefaultReportsDestinationConfig,
+    /**
+     * Declaration of a (S3 Bucket) Life cycle rule for default audit report destination.
+     */
+    lifecycleRules: t.optional(t.array(t.lifecycleRule)),
+  });
+
+  /**
+   * AWS Detective configuration
+   */
+  static readonly detectiveConfig = t.interface({
+    /**
+     * Indicates whether Amazon Detective is enabled.
+     */
+    enable: t.boolean,
+    /**
+     * List of AWS Region names to be excluded from configuring Amazon Detective
+     */
+    excludeRegions: t.optional(t.array(t.region)),
+  });
+
+  /**
    * AWS SecurityHub standards configuration
    */
   static readonly securityHubStandardConfig = t.interface({
@@ -154,6 +205,7 @@ export class SecurityConfigTypes {
 
   static readonly securityHubConfig = t.interface({
     enable: t.boolean,
+    regionAggregation: t.optional(t.boolean),
     excludeRegions: t.optional(t.array(t.region)),
     standards: t.array(this.securityHubStandardConfig),
   });
@@ -186,6 +238,8 @@ export class SecurityConfigTypes {
     s3PublicAccessBlock: SecurityConfigTypes.s3PublicAccessBlockConfig,
     macie: SecurityConfigTypes.macieConfig,
     guardduty: SecurityConfigTypes.guardDutyConfig,
+    auditManager: t.optional(SecurityConfigTypes.auditManagerConfig),
+    detective: t.optional(SecurityConfigTypes.detectiveConfig),
     securityHub: SecurityConfigTypes.securityHubConfig,
     ssmAutomation: this.ssmAutomationConfig,
   });
@@ -211,6 +265,7 @@ export class SecurityConfigTypes {
     handler: t.nonEmptyString,
     runtime: t.nonEmptyString,
     rolePolicyFile: t.nonEmptyString,
+    timeout: t.optional(t.number),
   });
 
   static readonly triggeringResourceType = t.interface({
@@ -300,6 +355,7 @@ export class SecurityConfigTypes {
     type: t.optional(t.nonEmptyString),
     customRule: t.optional(this.customRuleConfigType),
     remediation: t.optional(this.configRuleRemediationType),
+    tags: t.optional(t.array(t.tag)),
   });
 
   static readonly awsConfigRuleSet = t.interface({
@@ -468,6 +524,60 @@ export class GuardDutyConfig implements t.TypeOf<typeof SecurityConfigTypes.guar
 }
 
 /**
+ * AWS Audit Manager Default Reports Destination configuration.
+ */
+export class AuditManagerDefaultReportsDestinationConfig
+  implements t.TypeOf<typeof SecurityConfigTypes.auditManagerDefaultReportsDestinationConfig>
+{
+  /**
+   * Indicates whether AWS Audit Manager Default Reports enabled.
+   */
+  readonly enable = false;
+  /**
+   * The type of resource for the publishing destination. Currently only Amazon S3 buckets are supported.
+   */
+  readonly destinationType = 'S3';
+}
+
+/**
+ * AWS Audit Manager configuration
+ */
+export class AuditManagerConfig implements t.TypeOf<typeof SecurityConfigTypes.auditManagerConfig> {
+  /**
+   * Indicates whether AWS Audit Manager enabled.
+   */
+  readonly enable = false;
+  /**
+   * List of AWS Region names to be excluded from configuring AWS Audit Manager
+   */
+  readonly excludeRegions: t.Region[] = [];
+  /**
+   * AWS Audit Manager Default Reports configuration.
+   * @type object
+   */
+  readonly defaultReportsConfiguration: AuditManagerDefaultReportsDestinationConfig =
+    new AuditManagerDefaultReportsDestinationConfig();
+  /**
+   * Declaration of a (S3 Bucket) Life cycle rule.
+   */
+  readonly lifecycleRules: t.LifecycleRule[] | undefined = undefined;
+}
+
+/**
+ * Amazon Detective configuration
+ */
+export class DetectiveConfig implements t.TypeOf<typeof SecurityConfigTypes.detectiveConfig> {
+  /**
+   * Indicates whether Amazon Detective is enabled.
+   */
+  readonly enable = false;
+  /**
+   * List of AWS Region names to be excluded from configuring Amazon Detective
+   */
+  readonly excludeRegions: t.Region[] = [];
+}
+
+/**
  * AWS SecurityHub standards configuration
  */
 export class SecurityHubStandardConfig implements t.TypeOf<typeof SecurityConfigTypes.securityHubStandardConfig> {
@@ -495,6 +605,10 @@ export class SecurityHubConfig implements t.TypeOf<typeof SecurityConfigTypes.se
    */
   readonly enable = false;
   /**
+   * Indicates whether SecurityHub results are aggregated in the Home Region
+   */
+  readonly regionAggregation = false;
+  /**
    * List of AWS Region names to be excluded from configuring SecurityHub
    */
   readonly excludeRegions: t.Region[] = [];
@@ -521,7 +635,7 @@ export class SnsSubscriptionConfig implements t.TypeOf<typeof SecurityConfigType
 /**
  * AWS EBS default encryption configuration
  */
-export class ebsDefaultVolumeEncryptionConfig
+export class EbsDefaultVolumeEncryptionConfig
   implements t.TypeOf<typeof SecurityConfigTypes.ebsDefaultVolumeEncryptionConfig>
 {
   /**
@@ -587,7 +701,7 @@ export class CentralSecurityServicesConfig
    * Designated administrator account name for accelerator security services.
    * AWS organizations designate a member account as a delegated administrator for the
    * organization users and roles from that account can perform administrative actions for security services like
-   * Macie, GuardDuty and SecurityHub. Without designated administrator account administrative tasks for
+   * Macie, GuardDuty, Detective and SecurityHub. Without designated administrator account administrative tasks for
    * security services are performed only by users or roles in the organization's management account.
    * This helps you to separate management of the organization from management of these security services.
    * Accelerator use Audit account as designated administrator account.
@@ -616,7 +730,7 @@ export class CentralSecurityServicesConfig
    *     excludeRegions: []
    * ```
    */
-  readonly ebsDefaultVolumeEncryption: ebsDefaultVolumeEncryptionConfig = new ebsDefaultVolumeEncryptionConfig();
+  readonly ebsDefaultVolumeEncryption: EbsDefaultVolumeEncryptionConfig = new EbsDefaultVolumeEncryptionConfig();
   /**
    * AWS S3 public access block configuration
    *
@@ -673,6 +787,14 @@ export class CentralSecurityServicesConfig
    * Amazon GuardDuty Configuration
    */
   readonly guardduty: GuardDutyConfig = new GuardDutyConfig();
+  /**
+   * Amazon Audit Manager Configuration
+   */
+  readonly auditManager: AuditManagerConfig | undefined = undefined;
+  /**
+   * Amazon Detective Configuration
+   */
+  readonly detective: DetectiveConfig | undefined = undefined;
   /**
    * AWS SecurityHub configuration
    *
@@ -845,6 +967,10 @@ export class ConfigRule implements t.TypeOf<typeof SecurityConfigTypes.configRul
    */
   readonly type = '';
   /**
+   * Tags for the config rule
+   */
+  readonly tags = [];
+  /**
    * A custom config rule is backed by AWS Lambda function. This is required when creating custom config rule.
    */
   readonly customRule = {
@@ -869,6 +995,10 @@ export class ConfigRule implements t.TypeOf<typeof SecurityConfigTypes.configRul
        * Lambda execution role policy definition file
        */
       rolePolicyFile: '',
+      /**
+       * Lambda timeout duration in seconds
+       */
+      timeout: 3,
     },
     /**
      * Whether to run the rule on a fixed frequency.
@@ -964,6 +1094,10 @@ export class ConfigRule implements t.TypeOf<typeof SecurityConfigTypes.configRul
        * Lambda execution role policy definition file
        */
       rolePolicyFile: '',
+      /**
+       * Lambda function execution timeout in seconds
+       */
+      timeout: 3,
     },
     /**
      * Maximum time in seconds that AWS Config runs auto-remediation. If you do not select a number, the default is 60 seconds.
@@ -1021,6 +1155,7 @@ export class AwsConfigRuleSet implements t.TypeOf<typeof SecurityConfigTypes.aws
    *               sourceFilePath: custom-config-rules/attach-ec2-instance-profile.zip
    *               handler: index.handler
    *               runtime: nodejs14.x
+   *               timeout: 3
    *             periodic: true
    *             maximumExecutionFrequency: Six_Hours
    *             configurationChanges: true

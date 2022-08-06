@@ -156,6 +156,8 @@ Object {
       "Type": "CommaDelimitedList",
     },
     "AuditAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The security audit account (also referred to as the audit account)",
       "Type": "String",
     },
@@ -169,10 +171,14 @@ Object {
       "Type": "String",
     },
     "LogArchiveAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The log archive account email",
       "Type": "String",
     },
     "ManagementAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The management (primary) account email",
       "Type": "String",
     },
@@ -187,7 +193,7 @@ Object {
     "RepositoryBranchName": Object {
       "AllowedPattern": ".+",
       "ConstraintDescription": "The repository branch name must not be empty",
-      "Default": "release/v1.0.1",
+      "Default": "release/v1.1.0",
       "Description": "The name of the git branch to use for installation. To determine the branch name, navigate to the Landing Zone Accelerator GitHub branches page and choose the release branch you would like to deploy. Release branch names will align with the semantic versioning of our GitHub releases. New release branches will be available as the open source project is updated with new features.",
       "Type": "String",
     },
@@ -367,6 +373,16 @@ Object {
     },
     "CodeCommitPipelineRoleDefaultPolicyDE8B332B": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -471,6 +487,16 @@ Object {
     },
     "CodeCommitPipelineSourceCodePipelineActionRoleDefaultPolicyF71E0C0D": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -734,6 +760,16 @@ Object {
     },
     "GitHubPipelineRoleDefaultPolicyD82457D6": Object {
       "Condition": "UseGitHubCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -902,7 +938,9 @@ Object {
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -1009,6 +1047,16 @@ Object {
       "Type": "AWS::S3::BucketPolicy",
     },
     "InstallerAdminRole7DEE4AC8": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "AssumeRolePolicyDocument": Object {
           "Statement": Array [
@@ -1040,6 +1088,20 @@ Object {
       "Type": "AWS::IAM::Role",
     },
     "InstallerAdminRoleDefaultPolicy7EEE1AAB": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -1364,6 +1426,16 @@ Object {
       "Type": "AWS::KMS::Alias",
     },
     "InstallerProject879FF821": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-CB3",
+              "reason": "Project requires access to the Docker daemon.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "Artifacts": Object {
           "Type": "CODEPIPELINE",
@@ -1607,6 +1679,13 @@ phases:
                   "Ref": "AWS::Region",
                 },
                 "; fi
+  post_build:
+    commands:
+      - aws codepipeline start-pipeline-execution --name ",
+                Object {
+                  "Ref": "AcceleratorQualifier",
+                },
+                "-pipeline
 ",
               ],
             ],
@@ -1679,7 +1758,9 @@ phases:
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -2026,7 +2107,7 @@ phases:
           ],
         },
         "Type": "String",
-        "Value": "1.0.1",
+        "Value": "1.1.0",
       },
       "Type": "AWS::SSM::Parameter",
     },
@@ -2211,6 +2292,8 @@ Object {
       "Type": "CommaDelimitedList",
     },
     "AuditAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The security audit account (also referred to as the audit account)",
       "Type": "String",
     },
@@ -2224,10 +2307,14 @@ Object {
       "Type": "String",
     },
     "LogArchiveAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The log archive account email",
       "Type": "String",
     },
     "ManagementAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The management (primary) account email",
       "Type": "String",
     },
@@ -2242,7 +2329,7 @@ Object {
     "RepositoryBranchName": Object {
       "AllowedPattern": ".+",
       "ConstraintDescription": "The repository branch name must not be empty",
-      "Default": "release/v1.0.1",
+      "Default": "release/v1.1.0",
       "Description": "The name of the git branch to use for installation. To determine the branch name, navigate to the Landing Zone Accelerator GitHub branches page and choose the release branch you would like to deploy. Release branch names will align with the semantic versioning of our GitHub releases. New release branches will be available as the open source project is updated with new features.",
       "Type": "String",
     },
@@ -2422,6 +2509,16 @@ Object {
     },
     "CodeCommitPipelineRoleDefaultPolicyDE8B332B": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -2526,6 +2623,16 @@ Object {
     },
     "CodeCommitPipelineSourceCodePipelineActionRoleDefaultPolicyF71E0C0D": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -2789,6 +2896,16 @@ Object {
     },
     "GitHubPipelineRoleDefaultPolicyD82457D6": Object {
       "Condition": "UseGitHubCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -2957,7 +3074,9 @@ Object {
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -3064,6 +3183,16 @@ Object {
       "Type": "AWS::S3::BucketPolicy",
     },
     "InstallerAdminRole7DEE4AC8": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "AssumeRolePolicyDocument": Object {
           "Statement": Array [
@@ -3095,6 +3224,20 @@ Object {
       "Type": "AWS::IAM::Role",
     },
     "InstallerAdminRoleDefaultPolicy7EEE1AAB": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -3419,6 +3562,16 @@ Object {
       "Type": "AWS::KMS::Alias",
     },
     "InstallerProject879FF821": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-CB3",
+              "reason": "Project requires access to the Docker daemon.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "Artifacts": Object {
           "Type": "CODEPIPELINE",
@@ -3652,6 +3805,13 @@ phases:
                   "Ref": "AWS::Region",
                 },
                 "; fi
+  post_build:
+    commands:
+      - aws codepipeline start-pipeline-execution --name ",
+                Object {
+                  "Ref": "AcceleratorQualifier",
+                },
+                "-pipeline
 ",
               ],
             ],
@@ -3724,7 +3884,9 @@ phases:
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -4071,7 +4233,7 @@ phases:
           ],
         },
         "Type": "String",
-        "Value": "1.0.1",
+        "Value": "1.1.0",
       },
       "Type": "AWS::SSM::Parameter",
     },
@@ -4232,6 +4394,8 @@ Object {
       "Type": "CommaDelimitedList",
     },
     "AuditAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The security audit account (also referred to as the audit account)",
       "Type": "String",
     },
@@ -4245,17 +4409,21 @@ Object {
       "Type": "String",
     },
     "LogArchiveAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The log archive account email",
       "Type": "String",
     },
     "ManagementAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The management (primary) account email",
       "Type": "String",
     },
     "RepositoryBranchName": Object {
       "AllowedPattern": ".+",
       "ConstraintDescription": "The repository branch name must not be empty",
-      "Default": "release/v1.0.1",
+      "Default": "release/v1.1.0",
       "Description": "The name of the git branch to use for installation. To determine the branch name, navigate to the Landing Zone Accelerator GitHub branches page and choose the release branch you would like to deploy. Release branch names will align with the semantic versioning of our GitHub releases. New release branches will be available as the open source project is updated with new features.",
       "Type": "String",
     },
@@ -4414,6 +4582,16 @@ Object {
     },
     "CodeCommitPipelineRoleDefaultPolicyDE8B332B": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -4518,6 +4696,16 @@ Object {
     },
     "CodeCommitPipelineSourceCodePipelineActionRoleDefaultPolicyF71E0C0D": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -4771,6 +4959,16 @@ Object {
     },
     "GitHubPipelineRoleDefaultPolicyD82457D6": Object {
       "Condition": "UseGitHubCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -4932,7 +5130,9 @@ Object {
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -5028,6 +5228,16 @@ Object {
       "Type": "AWS::S3::BucketPolicy",
     },
     "InstallerAdminRole7DEE4AC8": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "AssumeRolePolicyDocument": Object {
           "Statement": Array [
@@ -5059,6 +5269,20 @@ Object {
       "Type": "AWS::IAM::Role",
     },
     "InstallerAdminRoleDefaultPolicy7EEE1AAB": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -5368,6 +5592,16 @@ Object {
       "Type": "AWS::KMS::Alias",
     },
     "InstallerProject879FF821": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-CB3",
+              "reason": "Project requires access to the Docker daemon.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "Artifacts": Object {
           "Type": "CODEPIPELINE",
@@ -5580,6 +5814,9 @@ phases:
                   "Ref": "AWS::Region",
                 },
                 "; fi
+  post_build:
+    commands:
+      - aws codepipeline start-pipeline-execution --name AWSAccelerator-Pipeline
 ",
               ],
             ],
@@ -5645,7 +5882,9 @@ phases:
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -5978,7 +6217,7 @@ phases:
       "Properties": Object {
         "Name": "/accelerator/AWSAccelerator-Test-InstallerStack/version",
         "Type": "String",
-        "Value": "1.0.1",
+        "Value": "1.1.0",
       },
       "Type": "AWS::SSM::Parameter",
     },
@@ -6128,6 +6367,8 @@ Object {
       "Type": "CommaDelimitedList",
     },
     "AuditAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The security audit account (also referred to as the audit account)",
       "Type": "String",
     },
@@ -6141,17 +6382,21 @@ Object {
       "Type": "String",
     },
     "LogArchiveAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The log archive account email",
       "Type": "String",
     },
     "ManagementAccountEmail": Object {
+      "AllowedPattern": "[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+",
+      "ConstraintDescription": "Must be a valid email address matching \\"[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+\\"",
       "Description": "The management (primary) account email",
       "Type": "String",
     },
     "RepositoryBranchName": Object {
       "AllowedPattern": ".+",
       "ConstraintDescription": "The repository branch name must not be empty",
-      "Default": "release/v1.0.1",
+      "Default": "release/v1.1.0",
       "Description": "The name of the git branch to use for installation. To determine the branch name, navigate to the Landing Zone Accelerator GitHub branches page and choose the release branch you would like to deploy. Release branch names will align with the semantic versioning of our GitHub releases. New release branches will be available as the open source project is updated with new features.",
       "Type": "String",
     },
@@ -6310,6 +6555,16 @@ Object {
     },
     "CodeCommitPipelineRoleDefaultPolicyDE8B332B": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -6414,6 +6669,16 @@ Object {
     },
     "CodeCommitPipelineSourceCodePipelineActionRoleDefaultPolicyF71E0C0D": Object {
       "Condition": "UseCodeCommitCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -6667,6 +6932,16 @@ Object {
     },
     "GitHubPipelineRoleDefaultPolicyD82457D6": Object {
       "Condition": "UseGitHubCondition",
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -6828,7 +7103,9 @@ Object {
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -6924,6 +7201,16 @@ Object {
       "Type": "AWS::S3::BucketPolicy",
     },
     "InstallerAdminRole7DEE4AC8": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "AssumeRolePolicyDocument": Object {
           "Statement": Array [
@@ -6955,6 +7242,20 @@ Object {
       "Type": "AWS::IAM::Role",
     },
     "InstallerAdminRoleDefaultPolicy7EEE1AAB": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-IAM4",
+              "reason": "Managed policies required for IAM role.",
+            },
+            Object {
+              "id": "AwsSolutions-IAM5",
+              "reason": "IAM role requires wildcard permissions.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "PolicyDocument": Object {
           "Statement": Array [
@@ -7264,6 +7565,16 @@ Object {
       "Type": "AWS::KMS::Alias",
     },
     "InstallerProject879FF821": Object {
+      "Metadata": Object {
+        "cdk_nag": Object {
+          "rules_to_suppress": Array [
+            Object {
+              "id": "AwsSolutions-CB3",
+              "reason": "Project requires access to the Docker daemon.",
+            },
+          ],
+        },
+      },
       "Properties": Object {
         "Artifacts": Object {
           "Type": "CODEPIPELINE",
@@ -7466,6 +7777,9 @@ phases:
                   "Ref": "AWS::Region",
                 },
                 "; fi
+  post_build:
+    commands:
+      - aws codepipeline start-pipeline-execution --name AWSAccelerator-Pipeline
 ",
               ],
             ],
@@ -7531,7 +7845,9 @@ phases:
                   ],
                 ],
               },
-              "NoncurrentVersionExpirationInDays": 1825,
+              "NoncurrentVersionExpiration": Object {
+                "NoncurrentDays": 1825,
+              },
               "NoncurrentVersionTransitions": Array [
                 Object {
                   "StorageClass": "DEEP_ARCHIVE",
@@ -7864,7 +8180,7 @@ phases:
       "Properties": Object {
         "Name": "/accelerator/AWSAccelerator-Test-InstallerStack/version",
         "Type": "String",
-        "Value": "1.0.1",
+        "Value": "1.1.0",
       },
       "Type": "AWS::SSM::Parameter",
     },

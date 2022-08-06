@@ -237,6 +237,12 @@ export class NetworkVpcStack extends AcceleratorStack {
       const accountId = this.accountsConfig.getAccountId(vpcItem.account);
       if (accountId === cdk.Stack.of(this).account && vpcItem.region == cdk.Stack.of(this).region) {
         if (vpcItem.useCentralEndpoints) {
+          if (props.partition !== 'aws') {
+            throw new Error(
+              'useCentralEndpoints set to true, but AWS Partition is not commercial. Please change it to false.',
+            );
+          }
+
           useCentralEndpoints = true;
         }
       }
@@ -462,16 +468,64 @@ export class NetworkVpcStack extends AcceleratorStack {
         Logger.info(`[network-vpc-stack] Adding VPC ${vpcItem.name}`);
 
         //
+        // Determine if using IPAM or manual CIDRs
+        //
+        let cidr: string | undefined = undefined;
+        let delegatedAdminAccountId: string | undefined = undefined;
+        let poolId: string | undefined = undefined;
+        let poolNetmask: number | undefined = undefined;
+        if (vpcItem.cidrs && vpcItem.ipamAllocations) {
+          throw new Error(
+            `[network-vpc-stack] Attempting to define both a CIDR and IPAM allocation for VPC ${vpcItem.name}. Please choose only one.`,
+          );
+        }
+
+        // Get first CIDR in array
+        if (vpcItem.cidrs) {
+          cidr = vpcItem.cidrs[0];
+        }
+
+        // Get IPAM details
+        if (vpcItem.ipamAllocations) {
+          if (!props.networkConfig.centralNetworkServices?.ipams) {
+            throw new Error(
+              `[network-vpc-stack] Attempting to add IPAM allocation to VPC ${vpcItem.name} without any IPAMs declared.`,
+            );
+          }
+
+          delegatedAdminAccountId = this.accountsConfig.getAccountId(
+            props.networkConfig.centralNetworkServices?.delegatedAdminAccount,
+          );
+
+          if (delegatedAdminAccountId === accountId) {
+            poolId = cdk.aws_ssm.StringParameter.valueForStringParameter(
+              this,
+              `/accelerator/network/ipam/pools/${vpcItem.ipamAllocations[0].ipamPoolName}/id`,
+            );
+          } else {
+            poolId = this.getResourceShare(
+              `${vpcItem.ipamAllocations[0].ipamPoolName}_IpamPoolShare`,
+              'ec2:IpamPool',
+              delegatedAdminAccountId,
+            ).resourceShareItemId;
+          }
+
+          poolNetmask = vpcItem.ipamAllocations[0].netmaskLength;
+        }
+
+        //
         // Create the VPC
         //
         const vpc = new Vpc(this, pascalCase(`${vpcItem.name}Vpc`), {
           name: vpcItem.name,
-          ipv4CidrBlock: vpcItem.cidrs[0],
+          ipv4CidrBlock: cidr,
           internetGateway: vpcItem.internetGateway,
           dhcpOptions: dhcpOptionsIds.get(vpcItem.dhcpOptions ?? ''),
           enableDnsHostnames: vpcItem.enableDnsHostnames ?? true,
           enableDnsSupport: vpcItem.enableDnsSupport ?? true,
           instanceTenancy: vpcItem.instanceTenancy ?? 'default',
+          ipv4IpamPoolId: poolId,
+          ipv4NetmaskLength: poolNetmask,
           tags: vpcItem.tags,
         });
         new cdk.aws_ssm.StringParameter(this, pascalCase(`SsmParam${pascalCase(vpcItem.name)}VpcId`), {
@@ -479,13 +533,49 @@ export class NetworkVpcStack extends AcceleratorStack {
           stringValue: vpc.vpcId,
         });
 
+        // Create additional CIDRs or IPAM allocations as needed
+        if (vpcItem.cidrs && vpcItem.cidrs.length > 1) {
+          for (const vpcCidr of vpcItem.cidrs.slice(1)) {
+            Logger.info(`[network-vpc-stack] Adding secondary CIDR ${vpcCidr} to VPC ${vpcItem.name}`);
+            vpc.addCidr({ cidrBlock: vpcCidr });
+          }
+        }
+
+        if (vpcItem.ipamAllocations && vpcItem.ipamAllocations.length > 1) {
+          for (const alloc of vpcItem.ipamAllocations.slice(1)) {
+            Logger.info(
+              `[network-vpc-stack] Adding secondary IPAM allocation with netmask ${alloc.netmaskLength} to VPC ${vpcItem.name}`,
+            );
+            // Get IPAM pool ID
+            if (delegatedAdminAccountId === accountId) {
+              poolId = cdk.aws_ssm.StringParameter.valueForStringParameter(
+                this,
+                `/accelerator/network/ipam/pools/${alloc.ipamPoolName}/id`,
+              );
+            } else {
+              poolId = this.getResourceShare(
+                `${alloc.ipamPoolName}_IpamPoolShare`,
+                'ec2:IpamPool',
+                delegatedAdminAccountId!,
+              ).resourceShareItemId;
+            }
+            vpc.addCidr({ ipv4IpamPoolId: poolId, ipv4NetmaskLength: alloc.netmaskLength });
+          }
+        }
+
         //
         // Tag the VPC if central endpoints are enabled. These tags are used to
         // identify which VPCs in a target account to create private hosted zone
         // associations for.
         //
+        if (vpcItem.useCentralEndpoints && props.partition !== 'aws') {
+          throw new Error(
+            'useCentralEndpoints set to true, but AWS Partition is not commercial. No tags will be added',
+          );
+        }
+
         if (vpcItem.useCentralEndpoints) {
-          if (centralEndpointVpc === undefined) {
+          if (!centralEndpointVpc) {
             throw new Error('Attempting to use central endpoints with no Central Endpoints defined');
           }
           cdk.Tags.of(vpc).add('accelerator:use-central-endpoints', 'true');
@@ -541,18 +631,58 @@ export class NetworkVpcStack extends AcceleratorStack {
         // Create Subnets
         //
         const subnetMap = new Map<string, Subnet>();
+        const ipamSubnetMap = new Map<number, Subnet>();
+        let index = 0;
+
         for (const subnetItem of vpcItem.subnets ?? []) {
+          if (subnetItem.ipv4CidrBlock && subnetItem.ipamAllocation) {
+            throw new Error(
+              `[network-vpc-stack] Subnet ${subnetItem.name} includes ipv4CidrBlock and ipamAllocation properties. Please choose only one.`,
+            );
+          }
           Logger.info(`[network-vpc-stack] Adding subnet ${subnetItem.name}`);
 
+          // Get route table for subnet association
           const routeTable = routeTableMap.get(subnetItem.routeTable);
-          if (routeTable === undefined) {
-            throw new Error(`Route table ${subnetItem.routeTable} not defined`);
+          if (!routeTable) {
+            throw new Error(
+              `[network-vpc-stack] Error creating subnet ${subnetItem.name}: route table ${subnetItem.routeTable} not defined`,
+            );
           }
 
+          // Check for base IPAM pool CIDRs in config
+          let basePool: string[] | undefined = undefined;
+          if (subnetItem.ipamAllocation) {
+            if (!props.networkConfig.centralNetworkServices?.ipams) {
+              throw new Error(
+                `[network-vpc-stack] Attempting to add IPAM allocation to subnet ${subnetItem.name} without any IPAMs declared.`,
+              );
+            }
+
+            for (const ipam of props.networkConfig.centralNetworkServices.ipams) {
+              const pool = ipam.pools?.find(item => item.name === subnetItem.ipamAllocation!.ipamPoolName);
+
+              if (pool) {
+                basePool = pool.provisionedCidrs;
+              }
+            }
+
+            if (!basePool) {
+              throw new Error(
+                `[network-vpc-stack] Error creating subnet ${subnetItem.name}: IPAM pool ${subnetItem.ipamAllocation.ipamPoolName} not defined`,
+              );
+            }
+          }
+
+          // Create subnet
           const subnet = new Subnet(this, pascalCase(`${vpcItem.name}Vpc`) + pascalCase(`${subnetItem.name}Subnet`), {
             name: subnetItem.name,
             availabilityZone: `${cdk.Stack.of(this).region}${subnetItem.availabilityZone}`,
+            basePool,
+            ipamAllocation: subnetItem.ipamAllocation,
             ipv4CidrBlock: subnetItem.ipv4CidrBlock,
+            kmsKey: this.acceleratorKey,
+            logRetentionInDays: this.logRetention,
             mapPublicIpOnLaunch: subnetItem.mapPublicIpOnLaunch,
             routeTable,
             vpc,
@@ -567,6 +697,24 @@ export class NetworkVpcStack extends AcceleratorStack {
               stringValue: subnet.subnetId,
             },
           );
+
+          // Need to ensure IPAM subnets are created one at a time to avoid duplicate allocations
+          // Add dependency on previously-created IPAM subnet, if it exists
+          if (subnetItem.ipamAllocation) {
+            ipamSubnetMap.set(index, subnet);
+
+            if (index > 0) {
+              const lastSubnet = ipamSubnetMap.get(index - 1);
+
+              if (!lastSubnet) {
+                throw new Error(
+                  `[network-vpc-stack] Error creating subnet ${subnetItem.name}: previous IPAM subnet undefined`,
+                );
+              }
+              subnet.node.addDependency(lastSubnet);
+            }
+            index += 1;
+          }
 
           if (subnetItem.shareTargets) {
             Logger.info(`[network-vpc-stack] Share subnet`);
@@ -666,50 +814,110 @@ export class NetworkVpcStack extends AcceleratorStack {
           }
 
           for (const routeTableEntryItem of routeTableItem.routes ?? []) {
-            const id =
+            const routeId =
               pascalCase(`${vpcItem.name}Vpc`) +
               pascalCase(`${routeTableItem.name}RouteTable`) +
               pascalCase(routeTableEntryItem.name);
+            const entryTypes = ['transitGateway', 'internetGateway', 'natGateway'];
 
-            // Route: Transit Gateway
-            if (routeTableEntryItem.type === 'transitGateway') {
-              Logger.info(`[network-vpc-stack] Adding Transit Gateway Route Table Entry ${routeTableEntryItem.name}`);
+            // Check if using a prefix list or CIDR as the destination
+            if (routeTableEntryItem.type && entryTypes.includes(routeTableEntryItem.type)) {
+              let destination: string | undefined = undefined;
+              let destinationPrefixListId: string | undefined = undefined;
+              if (routeTableEntryItem.destinationPrefixList) {
+                // Check if a CIDR destination is also defined
+                if (routeTableEntryItem.destination) {
+                  throw new Error(
+                    `[network-vpc-stack] ${routeTableEntryItem.name} using destination and destinationPrefixList. Please choose only one destination type`,
+                  );
+                }
 
-              const transitGatewayId = transitGatewayIds.get(routeTableEntryItem.target);
-              if (transitGatewayId === undefined) {
-                throw new Error(`Transit Gateway ${routeTableEntryItem.target} not found`);
+                // Get PL ID from map
+                const prefixList = prefixListMap.get(routeTableEntryItem.destinationPrefixList);
+                if (!prefixList) {
+                  throw new Error(
+                    `[network-vpc-stack] Prefix list ${routeTableEntryItem.destinationPrefixList} not found`,
+                  );
+                }
+                destinationPrefixListId = prefixList.prefixListId;
+              } else {
+                if (!routeTableEntryItem.destination) {
+                  throw new Error(
+                    `[network-vpc-stack] ${routeTableEntryItem.name} does not have a destination defined`,
+                  );
+                }
+                destination = routeTableEntryItem.destination;
               }
 
-              const transitGatewayAttachment = transitGatewayAttachments.get(routeTableEntryItem.target);
-              if (transitGatewayAttachment === undefined) {
-                throw new Error(`Transit Gateway Attachment ${routeTableEntryItem.target} not found`);
+              // Route: Transit Gateway
+              if (routeTableEntryItem.type === 'transitGateway') {
+                Logger.info(`[network-vpc-stack] Adding Transit Gateway Route Table Entry ${routeTableEntryItem.name}`);
+
+                if (!routeTableEntryItem.target) {
+                  throw new Error(
+                    `[network-vpc-stack] Transit gateway route ${routeTableEntryItem.name} for route table ${routeTableItem.name} must include a target`,
+                  );
+                }
+
+                const transitGatewayId = transitGatewayIds.get(routeTableEntryItem.target);
+                if (transitGatewayId === undefined) {
+                  throw new Error(`Transit Gateway ${routeTableEntryItem.target} not found`);
+                }
+
+                const transitGatewayAttachment = transitGatewayAttachments.get(routeTableEntryItem.target);
+                if (transitGatewayAttachment === undefined) {
+                  throw new Error(`Transit Gateway Attachment ${routeTableEntryItem.target} not found`);
+                }
+
+                routeTable.addTransitGatewayRoute(
+                  routeId,
+                  transitGatewayId,
+                  transitGatewayAttachment.node.defaultChild as cdk.aws_ec2.CfnTransitGatewayAttachment,
+                  destination,
+                  destinationPrefixListId,
+                  this.acceleratorKey,
+                  this.logRetention,
+                );
               }
 
-              routeTable.addTransitGatewayRoute(
-                id,
-                routeTableEntryItem.destination,
-                transitGatewayId,
-                // TODO: Implement correct dependency relationships without need for escape hatch
-                transitGatewayAttachment.node.defaultChild as cdk.aws_ec2.CfnTransitGatewayAttachment,
-              );
-            }
+              // Route: NAT Gateway
+              if (routeTableEntryItem.type === 'natGateway') {
+                Logger.info(`[network-vpc-stack] Adding NAT Gateway Route Table Entry ${routeTableEntryItem.name}`);
 
-            // Route: NAT Gateway
-            if (routeTableEntryItem.type === 'natGateway') {
-              Logger.info(`[network-vpc-stack] Adding NAT Gateway Route Table Entry ${routeTableEntryItem.name}`);
+                if (!routeTableEntryItem.target) {
+                  throw new Error(
+                    `[network-vpc-stack] NAT gateway route ${routeTableEntryItem.name} for route table ${routeTableItem.name} must include a target`,
+                  );
+                }
 
-              const natGateway = natGatewayMap.get(routeTableEntryItem.target);
-              if (natGateway === undefined) {
-                throw new Error(`NAT Gateway ${routeTableEntryItem.target} not found`);
+                const natGateway = natGatewayMap.get(routeTableEntryItem.target);
+                if (natGateway === undefined) {
+                  throw new Error(`NAT Gateway ${routeTableEntryItem.target} not found`);
+                }
+
+                routeTable.addNatGatewayRoute(
+                  routeId,
+                  natGateway.natGatewayId,
+                  destination,
+                  destinationPrefixListId,
+                  this.acceleratorKey,
+                  this.logRetention,
+                );
               }
 
-              routeTable.addNatGatewayRoute(id, routeTableEntryItem.destination, natGateway.natGatewayId);
-            }
-
-            // Route: Internet Gateway
-            if (routeTableEntryItem.type === 'internetGateway') {
-              Logger.info(`[network-vpc-stack] Adding Internet Gateway Route Table Entry ${routeTableEntryItem.name}`);
-              routeTable.addInternetGatewayRoute(id, routeTableEntryItem.destination);
+              // Route: Internet Gateway
+              if (routeTableEntryItem.type === 'internetGateway') {
+                Logger.info(
+                  `[network-vpc-stack] Adding Internet Gateway Route Table Entry ${routeTableEntryItem.name}`,
+                );
+                routeTable.addInternetGatewayRoute(
+                  routeId,
+                  destination,
+                  destinationPrefixListId,
+                  this.acceleratorKey,
+                  this.logRetention,
+                );
+              }
             }
           }
         }
@@ -825,9 +1033,9 @@ export class NetworkVpcStack extends AcceleratorStack {
                 securityGroupMap,
               );
 
-              for (const [index, ingressRule] of ingressRules.entries()) {
+              for (const [ingressRuleIndex, ingressRule] of ingressRules.entries()) {
                 if (ingressRule.targetSecurityGroup) {
-                  securityGroup.addIngressRule(`${securityGroupItem.name}-Ingress-${ruleId}-${index}`, {
+                  securityGroup.addIngressRule(`${securityGroupItem.name}-Ingress-${ruleId}-${ingressRuleIndex}`, {
                     sourceSecurityGroup: ingressRule.targetSecurityGroup,
                     ...ingressRule,
                   });
@@ -859,9 +1067,9 @@ export class NetworkVpcStack extends AcceleratorStack {
                 securityGroupMap,
               );
 
-              for (const [index, egressRule] of egressRules.entries()) {
+              for (const [egressRulesIndex, egressRule] of egressRules.entries()) {
                 if (egressRule.targetSecurityGroup) {
-                  securityGroup.addEgressRule(`${securityGroupItem.name}-Egress-${ruleId}-${index}`, {
+                  securityGroup.addEgressRule(`${securityGroupItem.name}-Egress-${ruleId}-${egressRulesIndex}`, {
                     destinationSecurityGroup: egressRule.targetSecurityGroup,
                     ...egressRule,
                   });
@@ -881,6 +1089,12 @@ export class NetworkVpcStack extends AcceleratorStack {
             vpc,
             tags: naclItem.tags,
           });
+          // Suppression for AwsSolutions-VPC3: A Network ACL or Network ACL entry has been implemented.
+          NagSuppressions.addResourceSuppressions(
+            networkAcl,
+            [{ id: 'AwsSolutions-VPC3', reason: 'NACL added to VPC' }],
+            true,
+          );
 
           new cdk.aws_ssm.StringParameter(
             this,
@@ -907,7 +1121,7 @@ export class NetworkVpcStack extends AcceleratorStack {
 
           for (const inboundRuleItem of naclItem.inboundRules ?? []) {
             Logger.info(`[network-vpc-stack] Adding inbound rule ${inboundRuleItem.rule} to ${naclItem.name}`);
-            const props: { cidrBlock?: string; ipv6CidrBlock?: string } = this.processNetworkAclTarget(
+            const inboundAclTargetProps: { cidrBlock?: string; ipv6CidrBlock?: string } = this.processNetworkAclTarget(
               inboundRuleItem.source,
             );
 
@@ -923,14 +1137,22 @@ export class NetworkVpcStack extends AcceleratorStack {
                   from: inboundRuleItem.fromPort,
                   to: inboundRuleItem.toPort,
                 },
-                ...props,
+                ...inboundAclTargetProps,
               },
+            );
+            // Suppression for AwsSolutions-VPC3: A Network ACL or Network ACL entry has been implemented.
+            NagSuppressions.addResourceSuppressionsByPath(
+              this,
+              `${this.stackName}/${pascalCase(vpcItem.name)}Vpc${pascalCase(naclItem.name)}Nacl/${pascalCase(
+                vpcItem.name,
+              )}Vpc${pascalCase(naclItem.name)}-Inbound-${inboundRuleItem.rule}`,
+              [{ id: 'AwsSolutions-VPC3', reason: 'NACL added to VPC' }],
             );
           }
 
           for (const outboundRuleItem of naclItem.outboundRules ?? []) {
             Logger.info(`[network-vpc-stack] Adding outbound rule ${outboundRuleItem.rule} to ${naclItem.name}`);
-            const props: { cidrBlock?: string; ipv6CidrBlock?: string } = this.processNetworkAclTarget(
+            const outboundAclTargetProps: { cidrBlock?: string; ipv6CidrBlock?: string } = this.processNetworkAclTarget(
               outboundRuleItem.destination,
             );
 
@@ -938,7 +1160,7 @@ export class NetworkVpcStack extends AcceleratorStack {
             networkAcl.addEntry(
               `${pascalCase(vpcItem.name)}Vpc${pascalCase(naclItem.name)}-Outbound-${outboundRuleItem.rule}`,
               {
-                egress: false,
+                egress: true,
                 protocol: outboundRuleItem.protocol,
                 ruleAction: outboundRuleItem.action,
                 ruleNumber: outboundRuleItem.rule,
@@ -946,8 +1168,16 @@ export class NetworkVpcStack extends AcceleratorStack {
                   from: outboundRuleItem.fromPort,
                   to: outboundRuleItem.toPort,
                 },
-                ...props,
+                ...outboundAclTargetProps,
               },
+            );
+            // Suppression for AwsSolutions-VPC3: A Network ACL or Network ACL entry has been implemented.
+            NagSuppressions.addResourceSuppressionsByPath(
+              this,
+              `${this.stackName}/${pascalCase(vpcItem.name)}Vpc${pascalCase(naclItem.name)}Nacl/${pascalCase(
+                vpcItem.name,
+              )}Vpc${pascalCase(naclItem.name)}-Outbound-${outboundRuleItem.rule}`,
+              [{ id: 'AwsSolutions-VPC3', reason: 'NACL added to VPC' }],
             );
           }
         }
@@ -1047,7 +1277,7 @@ export class NetworkVpcStack extends AcceleratorStack {
       }
     }
 
-    for (const type of item.types) {
+    for (const type of item.types ?? []) {
       Logger.info(`[network-vpc-stack] Adding type ${type}`);
       if (type === 'ALL') {
         rules.push(
@@ -1164,7 +1394,6 @@ export class NetworkVpcStack extends AcceleratorStack {
               throw new Error(`Specified subnet ${subnet} not defined`);
             }
             rules.push({
-              // TODO: Add support for dynamic IP lookup
               cidrIp: subnetItem.ipv4CidrBlock,
               ...props,
             });
@@ -1272,12 +1501,11 @@ export class NetworkVpcStack extends AcceleratorStack {
     });
 
     // Represents the item shared by RAM
-    const item = ResourceShareItem.fromLookup(this, pascalCase(`${logicalId}`), {
+    return ResourceShareItem.fromLookup(this, pascalCase(`${logicalId}`), {
       resourceShare,
       resourceShareItemType: itemType,
       kmsKey: this.acceleratorKey,
       logRetentionInDays: this.logRetention,
     });
-    return item;
   }
 }
