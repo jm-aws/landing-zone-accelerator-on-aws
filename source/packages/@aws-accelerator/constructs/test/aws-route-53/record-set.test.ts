@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,10 +12,12 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-
-import { SynthUtils } from '@aws-cdk/assert';
-
-import { HostedZone, RecordSet, SecurityGroup, VpcEndpoint } from '../../index';
+import { RecordSet } from '../../lib/aws-route-53/record-set';
+import { HostedZone } from '../../lib/aws-route-53/hosted-zone';
+import { VpcEndpoint } from '../../lib/aws-ec2/vpc-endpoint';
+import { SecurityGroup } from '../../lib/aws-ec2/vpc';
+import { snapShotTest } from '../snapshot-test';
+import { describe, expect, it } from '@jest/globals';
 
 const testNamePrefix = 'Construct(RecordSet): ';
 
@@ -61,211 +63,29 @@ const endpoint = new VpcEndpoint(stack, `TestVpcEndpoint`, {
   }),
 });
 
-new RecordSet(stack, `TestRecordSet`, {
-  type: 'A',
-  name: hostedZoneName,
-  hostedZone: hostedZone,
-  dnsName: endpoint.dnsName,
-  hostedZoneId: endpoint.hostedZoneId,
-});
-
 /**
  * RecordSet construct test
  */
 describe('RecordSet', () => {
-  /**
-   * Snapshot test
-   */
-  test(`${testNamePrefix} Snapshot Test`, () => {
-    expect(SynthUtils.toCloudFormation(stack)).toMatchSnapshot();
-  });
-
-  /**
-   * Number of HostedZone test
-   */
-  test(`${testNamePrefix} Hosted zone resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Route53::HostedZone', 1);
-  });
-
-  /**
-   * Number of RecordSet test
-   */
-  test(`${testNamePrefix} RecordSet resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Route53::RecordSet', 1);
-  });
-
-  /**
-   * Number of SecurityGroup test
-   */
-  test(`${testNamePrefix} SecurityGroup resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::EC2::SecurityGroup', 1);
-  });
-
-  /**
-   * Number of VPCEndpoint test
-   */
-  test(`${testNamePrefix} VPCEndpoint resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::EC2::VPCEndpoint', 1);
-  });
-
-  /**
-   * HostedZone resource configuration test
-   */
-  test(`${testNamePrefix} HostedZone resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestHostedZone68F306E4: {
-          Type: 'AWS::Route53::HostedZone',
-          Properties: {
-            Name: 's3-global.accesspoint.aws.com',
-            VPCs: [
-              {
-                VPCId: 'Test',
-                VPCRegion: {
-                  Ref: 'AWS::Region',
-                },
-              },
-            ],
-          },
-        },
-      },
+  it('test with hostedZone and dns', () => {
+    new RecordSet(stack, `TestRecordSet`, {
+      type: 'A',
+      name: hostedZoneName,
+      hostedZone: hostedZone,
+      dnsName: endpoint.dnsName,
+      hostedZoneId: endpoint.hostedZoneId,
     });
   });
-
-  /**
-   * RecordSet resource configuration test
-   */
-  test(`${testNamePrefix} RecordSet resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestRecordSetED81F5C1: {
-          Type: 'AWS::Route53::RecordSet',
-          Properties: {
-            AliasTarget: {
-              DNSName: {
-                'Fn::Select': [
-                  1,
-                  {
-                    'Fn::Split': [
-                      ':',
-                      {
-                        'Fn::Select': [
-                          0,
-                          {
-                            'Fn::GetAtt': ['TestVpcEndpointF7CADE71', 'DnsEntries'],
-                          },
-                        ],
-                      },
-                    ],
-                  },
-                ],
-              },
-              HostedZoneId: {
-                'Fn::Select': [
-                  0,
-                  {
-                    'Fn::Split': [
-                      ':',
-                      {
-                        'Fn::Select': [
-                          0,
-                          {
-                            'Fn::GetAtt': ['TestVpcEndpointF7CADE71', 'DnsEntries'],
-                          },
-                        ],
-                      },
-                    ],
-                  },
-                ],
-              },
-            },
-            HostedZoneId: {
-              Ref: 'TestHostedZone68F306E4',
-            },
-            Name: 's3-global.accesspoint.aws.com',
-            Type: 'A',
-          },
-        },
-      },
+  it('test without hostedZone and dns', () => {
+    new RecordSet(stack, `TestRecordSet1`, {
+      type: 'A',
+      name: hostedZoneName,
+      hostedZone: hostedZone,
     });
   });
-
-  /**
-   * SecurityGroup resource configuration test
-   */
-  test(`${testNamePrefix} SecurityGroup resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestSecurityGroupDA4B5F83: {
-          Type: 'AWS::EC2::SecurityGroup',
-          Properties: {
-            GroupDescription: 'AWS Private Endpoint Zone',
-            GroupName: 'TestSecurityGroup',
-            Tags: [
-              {
-                Key: 'Name',
-                Value: 'TestSecurityGroup',
-              },
-            ],
-            VpcId: 'Test',
-          },
-        },
-      },
-    });
-  });
-
-  /**
-   * VPCEndpoint resource configuration test
-   */
-  test(`${testNamePrefix} VPCEndpoint resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestVpcEndpointF7CADE71: {
-          Type: 'AWS::EC2::VPCEndpoint',
-          Properties: {
-            PolicyDocument: {
-              Statement: [
-                {
-                  Action: '*',
-                  Condition: {
-                    StringEquals: {
-                      'aws:PrincipalOrgID': ['organizationId'],
-                    },
-                  },
-                  Effect: 'Allow',
-                  Principal: {
-                    AWS: '*',
-                  },
-                  Resource: '*',
-                  Sid: 'AccessToTrustedPrincipalsAndResources',
-                },
-              ],
-              Version: '2012-10-17',
-            },
-            PrivateDnsEnabled: false,
-            SecurityGroupIds: [
-              {
-                Ref: 'TestSecurityGroupDA4B5F83',
-              },
-            ],
-            ServiceName: {
-              'Fn::Join': [
-                '',
-                [
-                  'com.amazonaws.',
-                  {
-                    Ref: 'AWS::Region',
-                  },
-                  '.ec2',
-                ],
-              ],
-            },
-            SubnetIds: ['Test1', 'Test2'],
-            VpcEndpointType: 'Interface',
-            VpcId: 'Test',
-          },
-        },
-      },
-    });
-  });
+  snapShotTest(testNamePrefix, stack);
+  const sagemakerHostedZone = RecordSet.getHostedZoneNameFromService('notebook', 'us-east-1');
+  expect(sagemakerHostedZone).toBe('notebook.us-east-1.sagemaker.aws');
+  const s3GlobalEndpoint = RecordSet.getHostedZoneNameFromService('s3-global.accesspoint', 'us-east-1');
+  expect(s3GlobalEndpoint).toBe('s3-global.accesspoint.aws.com');
 });

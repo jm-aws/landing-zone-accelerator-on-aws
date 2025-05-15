@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -13,6 +13,8 @@
 
 import * as cdk from 'aws-cdk-lib';
 import { GetPortfolioId } from '../../lib/aws-servicecatalog/get-portfolio-id';
+import { snapShotTest } from '../snapshot-test';
+import { describe } from '@jest/globals';
 
 const testNamePrefix = 'Construct(GetPortfolioId): ';
 
@@ -30,10 +32,5 @@ new GetPortfolioId(stack, 'AssociateHostedZones', {
  * GetPortfolioId construct test
  */
 describe('GetPortfolioId', () => {
-  /**
-   * Number of Lambda function resource test
-   */
-  test(`${testNamePrefix} Lambda function resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Lambda::Function', 1);
-  });
+  snapShotTest(testNamePrefix, stack);
 });

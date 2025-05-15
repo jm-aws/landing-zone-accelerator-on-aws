@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -21,10 +21,12 @@ export class AssumeProfilePlugin implements Plugin {
 
   constructor(
     private readonly props: {
+      region?: string;
       assumeRoleName?: string;
       assumeRoleDuration?: number;
       credentials?: AWS.STS.Credentials;
       partition?: string;
+      caBundlePath?: string;
     } = {},
   ) {}
 
@@ -33,8 +35,10 @@ export class AssumeProfilePlugin implements Plugin {
       name: 'cdk-assume-role-plugin',
       assumeRoleName: this.props.assumeRoleName ?? AssumeProfilePlugin.getDefaultAssumeRoleName(),
       assumeRoleDuration: this.props.assumeRoleDuration ?? AssumeProfilePlugin.getDefaultAssumeRoleDuration(),
+      region: this.props.region!,
       credentials: this.props.credentials,
       partition: this.props.partition,
+      caBundlePath: this.props.caBundlePath,
     });
     host.registerCredentialProviderSource(source);
   }

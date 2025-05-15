@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -15,23 +15,37 @@ import * as cdk from 'aws-cdk-lib';
 import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
 import { AcceleratorStack, AcceleratorStackProps } from './accelerator-stack';
-import { Organization } from '@aws-accelerator/constructs';
-import { Logger } from '../logger';
 
 export class KeyStack extends AcceleratorStack {
-  public static readonly CROSS_ACCOUNT_ACCESS_ROLE_NAME = 'AWSAccelerator-CrossAccount-SsmParameter-Role';
-  public static readonly ACCELERATOR_KEY_ARN_PARAMETER_NAME = '/accelerator/kms/key-arn';
-
   constructor(scope: Construct, id: string, props: AcceleratorStackProps) {
     super(scope, id, props);
 
-    Logger.debug(`[key-stack] Region: ${cdk.Stack.of(this).region}`);
+    if (cdk.Stack.of(this).account === props.accountsConfig.getAuditAccountId()) {
+      //
+      // Create Accelerator Key
+      //
+      this.createAcceleratorKey(props);
 
-    const organizationId = props.organizationConfig.enable ? new Organization(this, 'Organization').id : '';
+      //
+      // Create cross account ssm parameter access role
+      //
+      this.createCrossAccountAcceleratorSsmParamAccessRole(props.accountsConfig.getAccountIds(), props);
 
+      //
+      // Create SSM Parameters
+      //
+      this.createSsmParameters();
+    }
+  }
+
+  /**
+   * Function to create Accelerator Key
+   * @param props {@link AcceleratorStackProps}
+   */
+  private createAcceleratorKey(props: AcceleratorStackProps): cdk.aws_kms.IKey {
     const key = new cdk.aws_kms.Key(this, 'AcceleratorKey', {
-      alias: 'alias/accelerator/kms/key',
-      description: 'AWS Accelerator Kms Key',
+      alias: this.acceleratorResourceNames.customerManagedKeys.acceleratorKey.alias,
+      description: this.acceleratorResourceNames.customerManagedKeys.acceleratorKey.description,
       enableKeyRotation: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
@@ -46,10 +60,10 @@ export class KeyStack extends AcceleratorStack {
           resources: ['*'],
           conditions: {
             StringEquals: {
-              'aws:PrincipalOrgID': organizationId,
+              ...this.getPrincipalOrgIdCondition(this.organizationId),
             },
             ArnLike: {
-              'aws:PrincipalARN': [`arn:${cdk.Stack.of(this).partition}:iam::*:role/AWSAccelerator-*`],
+              'aws:PrincipalARN': [`arn:${cdk.Stack.of(this).partition}:iam::*:role/${props.prefixes.accelerator}-*`],
             },
           },
         }),
@@ -65,7 +79,9 @@ export class KeyStack extends AcceleratorStack {
         resources: ['*'],
         conditions: {
           ArnLike: {
-            'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${cdk.Stack.of(this).region}:*:log-group:*`,
+            'kms:EncryptionContext:aws:logs:arn': `arn:${cdk.Stack.of(this).partition}:logs:${
+              cdk.Stack.of(this).region
+            }:*:log-group:*`,
           },
         },
       }),
@@ -79,12 +95,16 @@ export class KeyStack extends AcceleratorStack {
       { name: 'Sqs', principal: 'sqs.amazonaws.com' },
       // Add similar objects for any other service principal needs access to this key
     ];
+
+    // Deprecated
     if (props.securityConfig.centralSecurityServices.macie.enable) {
       allowedServicePrincipals.push({ name: 'Macie', principal: 'macie.amazonaws.com' });
     }
+    // Deprecated
     if (props.securityConfig.centralSecurityServices.guardduty.enable) {
       allowedServicePrincipals.push({ name: 'Guardduty', principal: 'guardduty.amazonaws.com' });
     }
+    // Deprecated
     if (props.securityConfig.centralSecurityServices.auditManager?.enable) {
       allowedServicePrincipals.push({ name: 'AuditManager', principal: 'auditmanager.amazonaws.com' });
       key.addToResourcePolicy(
@@ -93,7 +113,10 @@ export class KeyStack extends AcceleratorStack {
           principals: [new cdk.aws_iam.AnyPrincipal()],
           actions: ['kms:CreateGrant'],
           conditions: {
-            StringLike: { 'kms:ViaService': 'auditmanager.*.amazonaws.com', 'aws:PrincipalOrgID': organizationId },
+            StringLike: {
+              'kms:ViaService': 'auditmanager.*.amazonaws.com',
+              ...this.getPrincipalOrgIdCondition(this.organizationId),
+            },
             Bool: { 'kms:GrantIsForAWSResource': 'true' },
           },
           resources: ['*'],
@@ -112,54 +135,131 @@ export class KeyStack extends AcceleratorStack {
       );
     });
 
-    new cdk.aws_ssm.StringParameter(this, 'AcceleratorKmsArnParameter', {
-      parameterName: '/accelerator/kms/key-arn',
+    this.ssmParameters.push({
+      logicalId: 'AcceleratorKmsArnParameter',
+      parameterName: this.acceleratorResourceNames.parameters.acceleratorCmkArn,
+
       stringValue: key.keyArn,
     });
 
+    return key;
+  }
+
+  /**
+   * Create cross account accelerator ssm parameter access role
+   * @param accountIds
+   * @param props {@link AcceleratorStackProps}
+   * @returns cdk.aws_iam.Role | undefined
+   */
+  private createCrossAccountAcceleratorSsmParamAccessRole(
+    accountIds: string[],
+    props: AcceleratorStackProps,
+  ): cdk.aws_iam.Role | undefined {
+    let role: cdk.aws_iam.Role | undefined;
     // IAM Role to get access to accelerator organization level SSM parameters
     // Only create this role in the home region stack
-    if (cdk.Stack.of(this).region === props.globalConfig.homeRegion && props.organizationConfig.enable) {
-      new cdk.aws_iam.Role(this, 'CrossAccountAcceleratorSsmParamAccessRole', {
-        roleName: KeyStack.CROSS_ACCOUNT_ACCESS_ROLE_NAME,
-        assumedBy: new cdk.aws_iam.OrganizationPrincipal(organizationId),
-        inlinePolicies: {
-          default: new cdk.aws_iam.PolicyDocument({
-            statements: [
-              new cdk.aws_iam.PolicyStatement({
-                effect: cdk.aws_iam.Effect.ALLOW,
-                actions: ['ssm:GetParameters', 'ssm:GetParameter'],
-                resources: [
-                  `arn:${cdk.Stack.of(this).partition}:ssm:*:${
-                    cdk.Stack.of(this).account
-                  }:parameter/accelerator/kms/key-arn`,
-                ],
-                conditions: {
-                  StringEquals: {
-                    'aws:PrincipalOrgID': organizationId,
+    if (cdk.Stack.of(this).region === props.globalConfig.homeRegion) {
+      if (props.organizationConfig.enable) {
+        role = new cdk.aws_iam.Role(this, 'CrossAccountAcceleratorSsmParamAccessRole', {
+          roleName: this.acceleratorResourceNames.roles.crossAccountCmkArnSsmParameterAccess,
+          assumedBy: this.getOrgPrincipals(this.organizationId, true),
+          inlinePolicies: {
+            default: new cdk.aws_iam.PolicyDocument({
+              statements: [
+                new cdk.aws_iam.PolicyStatement({
+                  effect: cdk.aws_iam.Effect.ALLOW,
+                  actions: ['ssm:GetParameters', 'ssm:GetParameter'],
+                  resources: [
+                    `arn:${cdk.Stack.of(this).partition}:ssm:*:${cdk.Stack.of(this).account}:parameter${
+                      this.acceleratorResourceNames.parameters.acceleratorCmkArn
+                    }`,
+                    `arn:${cdk.Stack.of(this).partition}:ssm:*:${cdk.Stack.of(this).account}:parameter${
+                      this.acceleratorResourceNames.parameters.s3CmkArn
+                    }`,
+                  ],
+                  conditions: {
+                    StringEquals: {
+                      ...this.getPrincipalOrgIdCondition(this.organizationId),
+                    },
+                    ArnLike: {
+                      'aws:PrincipalARN': [
+                        `arn:${cdk.Stack.of(this).partition}:iam::*:role/${props.prefixes.accelerator}-*`,
+                      ],
+                    },
                   },
-                  ArnLike: {
-                    'aws:PrincipalARN': [`arn:${cdk.Stack.of(this).partition}:iam::*:role/AWSAccelerator-*`],
+                }),
+                new cdk.aws_iam.PolicyStatement({
+                  effect: cdk.aws_iam.Effect.ALLOW,
+                  actions: ['ssm:DescribeParameters'],
+                  resources: ['*'],
+                  conditions: {
+                    StringEquals: {
+                      ...this.getPrincipalOrgIdCondition(this.organizationId),
+                    },
+                    ArnLike: {
+                      'aws:PrincipalARN': [
+                        `arn:${cdk.Stack.of(this).partition}:iam::*:role/${props.prefixes.accelerator}-*`,
+                      ],
+                    },
                   },
-                },
-              }),
-              new cdk.aws_iam.PolicyStatement({
-                effect: cdk.aws_iam.Effect.ALLOW,
-                actions: ['ssm:DescribeParameters'],
-                resources: ['*'],
-                conditions: {
-                  StringEquals: {
-                    'aws:PrincipalOrgID': organizationId,
+                }),
+              ],
+            }),
+          },
+        });
+      } else {
+        const principals: cdk.aws_iam.PrincipalBase[] = [];
+        accountIds.forEach(accountId => {
+          principals.push(new cdk.aws_iam.AccountPrincipal(accountId));
+        });
+        role = new cdk.aws_iam.Role(this, 'CrossAccountAcceleratorSsmParamAccessRole', {
+          roleName: this.acceleratorResourceNames.roles.crossAccountCmkArnSsmParameterAccess,
+          assumedBy: new cdk.aws_iam.CompositePrincipal(...principals),
+          inlinePolicies: {
+            default: new cdk.aws_iam.PolicyDocument({
+              statements: [
+                new cdk.aws_iam.PolicyStatement({
+                  effect: cdk.aws_iam.Effect.ALLOW,
+                  actions: ['ssm:GetParameters', 'ssm:GetParameter'],
+                  resources: [
+                    `arn:${cdk.Stack.of(this).partition}:ssm:*:${cdk.Stack.of(this).account}:parameter${
+                      this.acceleratorResourceNames.parameters.acceleratorCmkArn
+                    }`,
+                    `arn:${cdk.Stack.of(this).partition}:ssm:*:${cdk.Stack.of(this).account}:parameter${
+                      this.acceleratorResourceNames.parameters.s3CmkArn
+                    }`,
+                  ],
+                  conditions: {
+                    StringEquals: {
+                      'aws:PrincipalAccount': [...accountIds],
+                    },
+                    ArnLike: {
+                      'aws:PrincipalARN': [
+                        `arn:${cdk.Stack.of(this).partition}:iam::*:role/${props.prefixes.accelerator}-*`,
+                      ],
+                    },
                   },
-                  ArnLike: {
-                    'aws:PrincipalARN': [`arn:${cdk.Stack.of(this).partition}:iam::*:role/AWSAccelerator-*`],
+                }),
+                new cdk.aws_iam.PolicyStatement({
+                  effect: cdk.aws_iam.Effect.ALLOW,
+                  actions: ['ssm:DescribeParameters'],
+                  resources: ['*'],
+                  conditions: {
+                    StringEquals: {
+                      'aws:PrincipalAccount': [...accountIds],
+                    },
+                    ArnLike: {
+                      'aws:PrincipalARN': [
+                        `arn:${cdk.Stack.of(this).partition}:iam::*:role/${props.prefixes.accelerator}-*`,
+                      ],
+                    },
                   },
-                },
-              }),
-            ],
-          }),
-        },
-      });
+                }),
+              ],
+            }),
+          },
+        });
+      }
 
       // AwsSolutions-IAM5: The IAM entity contains wildcard permissions and does not have a cdk_nag
       // rule suppression with evidence for this permission.
@@ -175,5 +275,7 @@ export class KeyStack extends AcceleratorStack {
         ],
       );
     }
+
+    return role;
   }
 }

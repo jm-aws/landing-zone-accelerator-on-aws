@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,15 +11,23 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-import { CreateDocumentRequest, UpdateDocumentRequest } from 'aws-sdk/clients/ssm';
-AWS.config.logger = console;
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import {
+  CreateDocumentCommand,
+  CreateDocumentCommandInput,
+  DescribeDocumentCommand,
+  DuplicateDocumentContent,
+  InvalidDocument,
+  SSMClient,
+  UpdateDocumentCommand,
+  UpdateDocumentCommandInput,
+} from '@aws-sdk/client-ssm';
+import { setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
 
 const documentName = 'SSM-SessionManagerRunShell';
-const ssm = new AWS.SSM();
 
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -32,6 +40,10 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   const cloudWatchLogGroupName: string = event.ResourceProperties['cloudWatchLogGroupName'];
   const cloudWatchEncryptionEnabled: boolean = event.ResourceProperties['cloudWatchEncryptionEnabled'] === 'true';
   const kmsKeyId: string = event.ResourceProperties['kmsKeyId'];
+  const solutionId = process.env['SOLUTION_ID'];
+
+  const ssm = new SSMClient({ customUserAgent: solutionId, retryStrategy: setRetryStrategy() });
+
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
@@ -52,36 +64,30 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         },
       };
       try {
-        await throttlingBackOff(() =>
-          ssm
-            .describeDocument({
-              Name: documentName,
-            })
-            .promise(),
-        );
-        const updateDocumentRequest: UpdateDocumentRequest = {
+        await throttlingBackOff(() => ssm.send(new DescribeDocumentCommand({ Name: documentName })));
+        const updateDocumentRequest: UpdateDocumentCommandInput = {
           Content: JSON.stringify(settings),
           Name: documentName,
           DocumentVersion: '$LATEST',
         };
         console.log('Update SSM Document Request: ', updateDocumentRequest);
-        await throttlingBackOff(() => ssm.updateDocument(updateDocumentRequest).promise());
+        await throttlingBackOff(() => ssm.send(new UpdateDocumentCommand(updateDocumentRequest)));
         console.log('Update SSM Document Success');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (error: any) {
-        if (error.code === 'DuplicateDocumentContent') {
+      } catch (e: any) {
+        if (e instanceof DuplicateDocumentContent) {
           console.log(`SSM Document is Already latest :${documentName}`);
-        } else if (error.code === 'InvalidDocument') {
-          const createDocumentRequest: CreateDocumentRequest = {
+        } else if (e instanceof InvalidDocument) {
+          const createDocumentRequest: CreateDocumentCommandInput = {
             Content: JSON.stringify(settings),
             Name: documentName,
             DocumentType: `Session`,
           };
           console.log('Create SSM Document Request: ', createDocumentRequest);
-          await throttlingBackOff(() => ssm.createDocument(createDocumentRequest).promise());
+          await throttlingBackOff(() => ssm.send(new CreateDocumentCommand(createDocumentRequest)));
           console.log('Create SSM Document Success');
         } else {
-          throw error;
+          throw new Error(`Error while updating SSM Document :${documentName}. Received: ${JSON.stringify(e)}`);
         }
       }
 

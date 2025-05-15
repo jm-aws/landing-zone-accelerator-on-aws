@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,10 +11,26 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
-
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import {
+  AttachmentStatus,
+  DeleteInternetGatewayCommand,
+  DeleteNetworkAclCommand,
+  DeleteRouteCommand,
+  DeleteSecurityGroupCommand,
+  DeleteSubnetCommand,
+  DeleteVpcCommand,
+  DescribeInternetGatewaysCommand,
+  DescribeNetworkAclsCommand,
+  DescribeRouteTablesCommand,
+  DescribeSecurityGroupsCommand,
+  DescribeSubnetsCommand,
+  DescribeVpcsCommand,
+  DetachInternetGatewayCommand,
+  EC2Client,
+} from '@aws-sdk/client-ec2';
+import { setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
 /**
  * delete-default-vpc - lambda handler
  *
@@ -22,7 +38,7 @@ AWS.config.logger = console;
  * @returns
  */
 
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -31,7 +47,12 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 > {
   // Retrieve operating region that stack is ran
   const region = event.ResourceProperties['region'];
-  const ec2Client = new AWS.EC2({ region: region });
+  const solutionId = process.env['SOLUTION_ID'];
+  const ec2Client = new EC2Client({
+    region,
+    customUserAgent: solutionId,
+    retryStrategy: setRetryStrategy(),
+  });
   const defaultVpcIds: string[] = [];
 
   switch (event.RequestType) {
@@ -43,14 +64,13 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
       let describeVpcsNextToken: string | undefined = undefined;
       do {
         const page = await throttlingBackOff(() =>
-          ec2Client
-            .describeVpcs({
+          ec2Client.send(
+            new DescribeVpcsCommand({
               Filters: [{ Name: 'is-default', Values: [`true`] }],
               NextToken: describeVpcsNextToken,
-            })
-            .promise(),
+            }),
+          ),
         );
-
         for (const vpc of page.Vpcs ?? []) {
           if (vpc.VpcId) {
             defaultVpcIds.push(vpc.VpcId);
@@ -75,31 +95,30 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         let nextToken: string | undefined = undefined;
         do {
           const page = await throttlingBackOff(() =>
-            ec2Client
-              .describeInternetGateways({
+            ec2Client.send(
+              new DescribeInternetGatewaysCommand({
                 Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }],
                 NextToken: nextToken,
-              })
-              .promise(),
+              }),
+            ),
           );
-
           for (const igw of page.InternetGateways ?? []) {
             for (const attachment of igw.Attachments ?? []) {
-              if (attachment.State == 'available') {
+              if (attachment.State == AttachmentStatus.attached) {
                 console.log(`Detaching ${igw.InternetGatewayId}`);
                 await throttlingBackOff(() =>
-                  ec2Client
-                    .detachInternetGateway({ InternetGatewayId: igw.InternetGatewayId!, VpcId: vpcId })
-                    .promise(),
+                  ec2Client.send(
+                    new DetachInternetGatewayCommand({ InternetGatewayId: igw.InternetGatewayId!, VpcId: vpcId }),
+                  ),
                 );
               }
               console.warn(`${igw.InternetGatewayId} is not attached. Proceeding to delete.`);
               await throttlingBackOff(() =>
-                ec2Client
-                  .deleteInternetGateway({
+                ec2Client.send(
+                  new DeleteInternetGatewayCommand({
                     InternetGatewayId: igw.InternetGatewayId!,
-                  })
-                  .promise(),
+                  }),
+                ),
               );
             }
           }
@@ -111,21 +130,21 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         nextToken = undefined;
         do {
           const page = await throttlingBackOff(() =>
-            ec2Client
-              .describeSubnets({
+            ec2Client.send(
+              new DescribeSubnetsCommand({
                 Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
                 NextToken: nextToken,
-              })
-              .promise(),
+              }),
+            ),
           );
           for (const subnet of page.Subnets ?? []) {
             console.log(`Delete Subnet ${subnet.SubnetId}`);
             await throttlingBackOff(() =>
-              ec2Client
-                .deleteSubnet({
+              ec2Client.send(
+                new DeleteSubnetCommand({
                   SubnetId: subnet.SubnetId!,
-                })
-                .promise(),
+                }),
+              ),
             );
           }
           nextToken = page.NextToken;
@@ -136,24 +155,24 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         nextToken = undefined;
         do {
           const page = await throttlingBackOff(() =>
-            ec2Client
-              .describeRouteTables({
+            ec2Client.send(
+              new DescribeRouteTablesCommand({
                 Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
                 NextToken: nextToken,
-              })
-              .promise(),
+              }),
+            ),
           );
           for (const routeTableObject of page.RouteTables ?? []) {
             for (const routes of routeTableObject.Routes ?? []) {
               if (routes.GatewayId !== 'local') {
                 console.log(`Removing route ${routes.DestinationCidrBlock} from ${routeTableObject.RouteTableId}`);
                 await throttlingBackOff(() =>
-                  ec2Client
-                    .deleteRoute({
+                  ec2Client.send(
+                    new DeleteRouteCommand({
                       RouteTableId: routeTableObject.RouteTableId!,
                       DestinationCidrBlock: routes.DestinationCidrBlock,
-                    })
-                    .promise(),
+                    }),
+                  ),
                 );
               }
             }
@@ -166,22 +185,22 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         nextToken = undefined;
         do {
           const page = await throttlingBackOff(() =>
-            ec2Client
-              .describeNetworkAcls({
+            ec2Client.send(
+              new DescribeNetworkAclsCommand({
                 Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
                 NextToken: nextToken,
-              })
-              .promise(),
+              }),
+            ),
           );
           for (const networkAclObject of page.NetworkAcls ?? []) {
             if (networkAclObject.IsDefault !== true) {
               console.log(`Deleting Network ACL ID ${networkAclObject.NetworkAclId}`);
               await throttlingBackOff(() =>
-                ec2Client
-                  .deleteNetworkAcl({
+                ec2Client.send(
+                  new DeleteNetworkAclCommand({
                     NetworkAclId: networkAclObject.NetworkAclId!,
-                  })
-                  .promise(),
+                  }),
+                ),
               );
             } else {
               console.warn(`${networkAclObject.NetworkAclId} is the default NACL. Ignoring`);
@@ -195,12 +214,12 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         nextToken = undefined;
         do {
           const page = await throttlingBackOff(() =>
-            ec2Client
-              .describeSecurityGroups({
+            ec2Client.send(
+              new DescribeSecurityGroupsCommand({
                 Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
                 NextToken: nextToken,
-              })
-              .promise(),
+              }),
+            ),
           );
           for (const securityGroupObject of page.SecurityGroups ?? []) {
             if (securityGroupObject.GroupName == 'default') {
@@ -208,11 +227,11 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
             } else {
               console.log(`Deleting Security Group Id ${securityGroupObject.GroupId}`);
               await throttlingBackOff(() =>
-                ec2Client
-                  .deleteSecurityGroup({
+                ec2Client.send(
+                  new DeleteSecurityGroupCommand({
                     GroupId: securityGroupObject.GroupId,
-                  })
-                  .promise(),
+                  }),
+                ),
               );
             }
           }
@@ -221,7 +240,7 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 
         // Once all resources are deleted, delete the VPC.
         console.log(`Deleting VPC ${vpcId}`);
-        await throttlingBackOff(() => ec2Client.deleteVpc({ VpcId: vpcId }).promise());
+        await throttlingBackOff(() => ec2Client.send(new DeleteVpcCommand({ VpcId: vpcId })));
       }
 
       return {

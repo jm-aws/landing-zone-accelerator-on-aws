@@ -1,19 +1,339 @@
 homeRegion: &HOME_REGION us-east-1
 enabledRegions:
   - *HOME_REGION
+  - us-west-2
+  # - ap-south-1
+  # - eu-central-1
+  # - us-west-1
+  # - eu-north-1
+  # - eu-west-3
+  # - eu-west-2
+  # - eu-west-1
+  # - ap-northeast-3
+  # - ap-northeast-2
+  # - ap-northeast-1
+  # - sa-east-1
+  # - ap-southeast-1
+  # - ap-southeast-2
+  # - us-east-2
+  # - ca-central-1
+  # Opt-in regions commented now, once test pipeline account configured for opt-in regions will use those
+  # - ap-south-2
+  # - eu-south-1
+  # - eu-south-2
+  # - me-central-1
+  # - il-central-1
+  # - eu-central-2
+  # - af-south-1
+  # - me-south-1
+  # - ap-east-1
+  # - ap-southeast-3
+  # - ca-west-1
+
 managementAccountAccessRole: AWSControlTowerExecution
+defaultEventBus:
+  policy: event-bus-policies/eventbus-policy.json
+  deploymentTargets:
+    organizationalUnits:
+      - Root
 cloudwatchLogRetentionInDays: 3653
+acceleratorMetadata:
+  enable: true
+  account: LogArchive
+  readOnlyAccessRoleArns:
+    - arn:aws:iam::111111111111:role/test-access-role
+snsTopics:
+  deploymentTargets:
+    organizationalUnits:
+      - Root
+  topics:
+    - name: Security
+      emailAddresses:
+        - notify-security@example.com
 terminationProtection: true
+lambda:
+  encryption:
+    useCMK: true
+    deploymentTargets:
+      accounts:
+        - Management
+        - Network
+      organizationalUnits:
+        - Security
+      excludedRegions:
+        - us-west-2
 controlTower:
   enable: true
+  landingZone:
+    version: '3.3'
+    logging:
+      loggingBucketRetentionDays: 365
+      accessLoggingBucketRetentionDays: 3650
+      organizationTrail: true
+    security:
+      enableIdentityCenterAccess: true
+  controls:
+    - identifier: AWS-GR_RDS_INSTANCE_PUBLIC_ACCESS_CHECK
+      enable: true
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+          - Devops
+          - Infrastructure
+          - Security
+          - Level1
+    - identifier: AWS-GR_ELASTICSEARCH_IN_VPC_ONLY
+      enable: true
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+          - Devops
+          - Infrastructure
+          - Security
+          - Level1
+    - identifier: AWS-GR_EC2_VOLUME_INUSE_CHECK
+      enable: true
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+          - Devops
+          - Infrastructure
+          - Security
+          - Level1
+    - identifier: AWS-GR_EBS_SNAPSHOT_PUBLIC_RESTORABLE_CHECK
+      enable: true
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+          - Devops
+          - Infrastructure
+          - Security
+          - Level1
+    - identifier: AWS-GR_RESTRICT_ROOT_USER_ACCESS_KEYS
+      enable: true
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+          - Devops
+          - Infrastructure
+          - Security
+          - Level1
+    - identifier: AWS-GR_EBS_OPTIMIZED_INSTANCE
+      enable: true
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+          - Devops
+          - Infrastructure
+          - Security
+          - Level1
+    - identifier: AWS-GR_RESTRICTED_COMMON_PORTS
+      enable: false
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+    - identifier: AWS-GR_RDS_SNAPSHOTS_PUBLIC_PROHIBITED
+      enable: false
+      deploymentTargets:
+        organizationalUnits:
+          - SecureWorkloads
+cdkOptions:
+  centralizeBuckets: true
+  useManagementAccessRole: true
+s3:
+  encryption:
+    createCMK: true
+    deploymentTargets:
+      accounts:
+        - Management
+      organizationalUnits:
+        - Security
+      excludedRegions:
+        - us-west-2
 logging:
   account: LogArchive
+  centralizedLoggingRegion: us-west-2
   cloudtrail:
-    enable: false
+    enable: true
     organizationTrail: false
+    accountTrails:
+      - name: AWSAccelerator-Account-CloudTrail
+        regions:
+          - us-east-1
+        deploymentTargets:
+          organizationalUnits:
+            - Root
+        settings:
+          multiRegionTrail: true
+          globalServiceEvents: true
+          managementEvents: true
+          s3DataEvents: true
+          lambdaDataEvents: true
+          sendToCloudWatchLogs: true
+          apiErrorRateInsight: false
+          apiCallRateInsight: false
+
+  centralLogBucket:
+    lifecycleRules:
+      - enabled: true
+        id: CentralLogsBucketLifecycleRule-01
+        abortIncompleteMultipartUpload: 15
+        expiration: 3563
+        expiredObjectDeleteMarker: false
+        noncurrentVersionExpiration: 3653
+        noncurrentVersionTransitions:
+          - storageClass: GLACIER
+            transitionAfter: 365
+        transitions:
+          - storageClass: GLACIER
+            transitionAfter: 365
+      - enabled: true
+        id: CentralLogsBucketLifecycleRule-02
+        abortIncompleteMultipartUpload: 15
+        expiration: 3563
+        expiredObjectDeleteMarker: false
+        noncurrentVersionExpiration: 3653
+        noncurrentVersionTransitions:
+          - storageClass: GLACIER
+            transitionAfter: 365
+        transitions:
+          - storageClass: GLACIER
+            transitionAfter: 365
+        prefix: 'guardduty'
+      - enabled: true
+        id: CentralLogsBucketLifecycleRule-03
+        abortIncompleteMultipartUpload: 15
+        expiredObjectDeleteMarker: true
+        noncurrentVersionExpiration: 3653
+        noncurrentVersionTransitions:
+          - storageClass: GLACIER
+            transitionAfter: 365
+        transitions:
+          - storageClass: GLACIER
+            transitionAfter: 365
+        prefix: 'macie'
+    s3ResourcePolicyAttachments:
+      - policy: bucket-policies/central-log-bucket.json
+
+  assetBucket:
+    importedBucket:
+      name: aws-accelerator-imported-all-enabled-${ASSET_BUCKET_ACCOUNT_ID}-${ASSET_BUCKET_REGION}
+      applyAcceleratorManagedBucketPolicy: true
+      createAcceleratorManagedKey: true
+    # s3ResourcePolicyAttachments:
+    #   - policy: bucket-policies/assets-bucket.json
+
+  accessLogBucket:
+    enable: true
+    deploymentTargets:
+      accounts:
+        - Management
+      organizationalUnits:
+        - Security
+      excludedRegions:
+        - us-west-2
+    importedBucket:
+      name: existing-access-logs-bucket-${ACCOUNT_ID}-${REGION}
+    customPolicyOverrides:
+      policy: bucket-policies/full-access-log-bucket.json
+    # s3ResourcePolicyAttachments:
+    #   - policy: bucket-policies/access-logs-bucket.json
+    lifecycleRules: []
+  elbLogBucket:
+    importedBucket:
+      name: existing-elb-logs-bucket-${ELB_LOG_BUCKET_ACCOUNT_ID}-${REGION}
+      applyAcceleratorManagedBucketPolicy: true
+    # customPolicyOverrides:
+    #   policy: bucket-policies/full-elb-log-bucket.json
+    s3ResourcePolicyAttachments:
+      - policy: bucket-policies/elb-logs-bucket.json
+    lifecycleRules: []
+
   sessionManager:
     sendToCloudWatchLogs: false
     sendToS3: true
+  cloudwatchLogs:
+    encryption:
+      useCMK: true
+      deploymentTargets:
+        accounts:
+          - Management
+        organizationalUnits:
+          - Security
+        excludedRegions:
+          - us-west-2
+    dataProtection:
+      overrideExisting: true
+      deploymentTargets:
+        accounts:
+          - Management
+        organizationalUnits:
+          - Security
+          - Infrastructure
+        excludedRegions:
+          - us-west-2
+      managedDataIdentifiers:
+        categories:
+          - Credentials
+    firehose:
+      fileExtension: json.gz
+    kinesis: 
+      streamingMode: PROVISIONED
+      shardCount: 4
+      retention: 28
+    subscription:
+      type: ACCOUNT
+      selectionCriteria: 'LogGroupName NOT IN ["/aws/lambda/AWSAccelerator-FirehoseRecordsProcessor", "development", "AppA"]'
+      overrideExisting: true
+    enable: true
+    dynamicPartitioning: dynamic-partitioning/log-filters.json
+    dynamicPartitioningByAccountId: true
+    # replaceLogDestinationArn: replaceLogDestinationArn
+
+    exclusions:
+      - organizationalUnits:
+          - Infrastructure
+        excludeAll: true
+      - organizationalUnits:
+          - Root
+        logGroupNames:
+          - test1/*
+      - accounts:
+          - Management
+        regions:
+          - us-east-1
+        logGroupNames:
+          - test/*
+tags:
+  - key: Environment
+    value: Dev
+  - key: ResourceOwner
+    value: AcmeApp
+limits:
+  - serviceCode: lambda
+    quotaCode: L-B99A9384
+    desiredValue: 1000
+    deploymentTargets:
+      organizationalUnits:
+        - Root
+    regions:
+      - us-west-2
+  - serviceCode: iam
+    quotaCode: L-4019AD8B
+    desiredValue: 15
+    deploymentTargets:
+      accounts:
+        - SharedServices
+  - serviceCode: vpc
+    quotaCode: L-F678F1CE
+    desiredValue: 20
+    deploymentTargets:
+      organizationalUnits:
+        - Security
+        - Infrastructure
+    regions:
+      - us-east-1
+      - us-west-2
 reports:
   costAndUsageReport:
     compression: Parquet
@@ -25,8 +345,8 @@ reports:
     reportVersioning: CREATE_NEW_REPORT
   budgets:
     - deploymentTargets:
-        organizationalUnits:
-          - Root
+        accounts:
+          - Management
       name: accel-budget
       timeUnit: MONTHLY
       type: COST
@@ -55,22 +375,56 @@ reports:
           threshold: 90
           comparisonOperator: GREATER_THAN
           subscriptionType: EMAIL
-          address: myemail+pa-budg@example.com
+          recipients:
+            - myemail+pa-budg@example.com
         - type: ACTUAL
           thresholdType: PERCENTAGE
           threshold: 80
           comparisonOperator: GREATER_THAN
-          subscriptionType: EMAIL
-          address: myemail+pa-budg@example.com
+          subscriptionType: SNS
+          address: arn:aws:sns:us-east-1:111111111111:aws-accelerator-Security
         - type: ACTUAL
           thresholdType: PERCENTAGE
           threshold: 75
           comparisonOperator: GREATER_THAN
-          subscriptionType: EMAIL
-          address: myemail+pa-budg@example.com
+          subscriptionType: SNS
+          recipients:
+            - arn:aws:sns:us-east-1:111111111111:aws-accelerator-Security
         - type: ACTUAL
           thresholdType: PERCENTAGE
           threshold: 50
           comparisonOperator: GREATER_THAN
           subscriptionType: EMAIL
-          address: myemail+pa-budg@example.com
+          recipients:
+            - myemail+pa-budg@example.com
+            - myemail+pa1-budg@example.com
+backup:
+  vaults:
+    - name: BackupVault
+      deploymentTargets:
+        organizationalUnits:
+          - Root
+    - name: InfrastructureVault
+      deploymentTargets:
+        accounts:
+          - Management
+      policy: backup-vault-policies/infrastructure-vault-policy.json
+ssmParameters:
+  - deploymentTargets:
+      organizationalUnits:
+        - Infrastructure
+      accounts:
+        - Management
+    parameters:
+      - name: parameterTest
+        path: /my/parameter/structure
+        value: parameterTestValue
+      - name: someOtherName
+        path: /my/account/structure
+        value: someOtherValue
+
+ssmInventory:
+  enable: true
+  deploymentTargets:
+    organizationalUnits:
+      - Root

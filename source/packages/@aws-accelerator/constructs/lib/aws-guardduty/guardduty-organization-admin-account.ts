@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,8 @@
  *  and limitations under the License.
  */
 
+import { PolicyStatementType } from '@aws-accelerator/utils/lib/common-resources';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
@@ -25,14 +27,56 @@ export interface GuardDutyOrganizationalAdminAccountProps {
    */
   readonly adminAccountId: string;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
 }
+
+export const GuardDutyEnableOrganizationAdminAccountPolicyStatements: PolicyStatementType[] = [
+  {
+    Sid: 'GuardDutyEnableOrganizationAdminAccountTaskOrganizationActions',
+    Effect: 'Allow',
+    Action: [
+      'organizations:DeregisterDelegatedAdministrator',
+      'organizations:DescribeOrganization',
+      'organizations:EnableAWSServiceAccess',
+      'organizations:ListAWSServiceAccessForOrganization',
+      'organizations:ListAccounts',
+      'organizations:ListDelegatedAdministrators',
+      'organizations:RegisterDelegatedAdministrator',
+      'organizations:ServicePrincipal',
+      'organizations:UpdateOrganizationConfiguration',
+    ],
+    Resource: '*',
+    Condition: {
+      StringLikeIfExists: {
+        'organizations:DeregisterDelegatedAdministrator': ['guardduty.amazonaws.com'],
+        'organizations:DescribeOrganization': ['guardduty.amazonaws.com'],
+        'organizations:EnableAWSServiceAccess': ['guardduty.amazonaws.com'],
+        'organizations:ListAWSServiceAccessForOrganization': ['guardduty.amazonaws.com'],
+        'organizations:ListAccounts': ['guardduty.amazonaws.com'],
+        'organizations:ListDelegatedAdministrators': ['guardduty.amazonaws.com'],
+        'organizations:RegisterDelegatedAdministrator': ['guardduty.amazonaws.com'],
+        'organizations:ServicePrincipal': ['guardduty.amazonaws.com'],
+        'organizations:UpdateOrganizationConfiguration': ['guardduty.amazonaws.com'],
+      },
+    },
+  },
+  {
+    Sid: 'GuardDutyEnableOrganizationAdminAccountTaskGuardDutyActions',
+    Effect: 'Allow',
+    Action: [
+      'guardduty:EnableOrganizationAdminAccount',
+      'guardduty:ListOrganizationAdminAccounts',
+      'guardduty:DisableOrganizationAdminAccount',
+    ],
+    Resource: '*',
+  },
+];
 
 /**
  * Class for GuardDutyOrganizationAdminAccount
@@ -47,49 +91,9 @@ export class GuardDutyOrganizationAdminAccount extends Construct {
 
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'enable-organization-admin-account/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       timeout: cdk.Duration.seconds(180),
-      policyStatements: [
-        {
-          Sid: 'GuardDutyEnableOrganizationAdminAccountTaskOrganizationActions',
-          Effect: 'Allow',
-          Action: [
-            'organizations:DeregisterDelegatedAdministrator',
-            'organizations:DescribeOrganization',
-            'organizations:EnableAWSServiceAccess',
-            'organizations:ListAWSServiceAccessForOrganization',
-            'organizations:ListAccounts',
-            'organizations:ListDelegatedAdministrators',
-            'organizations:RegisterDelegatedAdministrator',
-            'organizations:ServicePrincipal',
-            'organizations:UpdateOrganizationConfiguration',
-          ],
-          Resource: '*',
-          Condition: {
-            StringLikeIfExists: {
-              'organizations:DeregisterDelegatedAdministrator': ['guardduty.amazonaws.com'],
-              'organizations:DescribeOrganization': ['guardduty.amazonaws.com'],
-              'organizations:EnableAWSServiceAccess': ['guardduty.amazonaws.com'],
-              'organizations:ListAWSServiceAccessForOrganization': ['guardduty.amazonaws.com'],
-              'organizations:ListAccounts': ['guardduty.amazonaws.com'],
-              'organizations:ListDelegatedAdministrators': ['guardduty.amazonaws.com'],
-              'organizations:RegisterDelegatedAdministrator': ['guardduty.amazonaws.com'],
-              'organizations:ServicePrincipal': ['guardduty.amazonaws.com'],
-              'organizations:UpdateOrganizationConfiguration': ['guardduty.amazonaws.com'],
-            },
-          },
-        },
-        {
-          Sid: 'GuardDutyEnableOrganizationAdminAccountTaskGuardDutyActions',
-          Effect: 'Allow',
-          Action: [
-            'GuardDuty:EnableOrganizationAdminAccount',
-            'GuardDuty:ListOrganizationAdminAccounts',
-            'guardduty:DisableOrganizationAdminAccount',
-          ],
-          Resource: '*',
-        },
-      ],
+      policyStatements: GuardDutyEnableOrganizationAdminAccountPolicyStatements,
     });
 
     const resource = new cdk.CustomResource(this, 'Resource', {

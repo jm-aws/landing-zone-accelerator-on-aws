@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,12 +11,14 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
 import { SSMClient, PutParameterCommand, PutParameterCommandInput } from '@aws-sdk/client-ssm';
 
 const driftParameterName: string = process.env['DRIFT_PARAMETER_NAME'] ?? '';
 const driftMessageParameterName: string = process.env['DRIFT_MESSAGE_PARAMETER_NAME'] ?? '';
-const ssmClient = new SSMClient({});
+const solutionId: string = process.env['SOLUTION_ID'] ?? '';
+
+const ssmClient = new SSMClient({ customUserAgent: solutionId });
 /**
  * Control Tower Notifications - lambda handler
  *

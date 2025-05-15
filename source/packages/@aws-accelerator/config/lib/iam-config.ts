@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,347 +11,208 @@
  *  and limitations under the License.
  */
 
-import * as t from './common-types';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as yaml from 'js-yaml';
+import * as path from 'path';
 
-/**
- * IAM Configuration items.
- */
-export class IamConfigTypes {
-  /**
-   * SAML provider configuration
-   */
-  static readonly samlProviderConfig = t.interface({
-    name: t.nonEmptyString,
-    metadataDocument: t.nonEmptyString,
-  });
+import { createLogger } from '@aws-accelerator/utils/lib/logger';
 
-  /**
-   * IAM user configuration
-   */
-  static readonly userConfig = t.interface({
-    username: t.nonEmptyString,
-    group: t.nonEmptyString,
-    boundaryPolicy: t.optional(t.nonEmptyString),
-  });
+import { AccountsConfig } from './accounts-config';
+import * as t from './common';
+import * as i from './models/iam-config';
+import { ReplacementsConfig } from './replacements-config';
 
-  /**
-   * User set configuration
-   */
-  static readonly userSetConfig = t.interface({
-    deploymentTargets: t.deploymentTargets,
-    users: t.array(this.userConfig),
-  });
+const logger = createLogger(['iam-config']);
 
-  /**
-   * IAM policies config
-   */
-  static readonly policiesConfig = t.interface({
-    awsManaged: t.optional(t.array(t.nonEmptyString)),
-    customerManaged: t.optional(t.array(t.nonEmptyString)),
-  });
-
-  /**
-   * IAM group configuration
-   */
-  static readonly groupConfig = t.interface({
-    name: t.nonEmptyString,
-    policies: t.optional(this.policiesConfig),
-  });
-
-  /**
-   * Group set configuration
-   */
-  static readonly groupSetConfig = t.interface({
-    deploymentTargets: t.deploymentTargets,
-    groups: t.array(this.groupConfig),
-  });
-
-  /**
-   * An enum for assume by configuration
-   *
-   * Possible values service, account or provider
-   */
-  static readonly assumedByTypeEnum = t.enums('AssumedByConfigType', ['service', 'account', 'provider']);
-
-  /**
-   * Assumedby configuration
-   */
-  static readonly assumedByConfig = t.interface({
-    /**
-     * Type of IAM principal like service, account or provider, which can assume this role.
-     */
-    type: this.assumedByTypeEnum,
-    /**
-     * IAM principal of either service, account or provider type.
-     *
-     * IAM principal of sns service type (i.e. new ServicePrincipal('sns.amazonaws.com')), which can assume this role.
-     */
-    principal: t.optional(t.nonEmptyString),
-  });
-
-  /**
-   * IAM role configuration
-   */
-  static readonly roleConfig = t.interface({
-    /**
-     * A name for the IAM role. For valid values, see the RoleName parameter for the CreateRole action in the IAM API Reference.
-     *
-     */
-    name: t.nonEmptyString,
-    /**
-     * Indicates whether role is used for EC2 instance profile
-     */
-    instanceProfile: t.optional(t.boolean),
-    /**
-     * AssumedBy configuration
-     */
-    assumedBy: t.array(this.assumedByConfig),
-    /**
-     * Policies configuration
-     */
-    policies: t.optional(this.policiesConfig),
-    /**
-     * A permissions boundary configuration
-     */
-    boundaryPolicy: t.optional(t.nonEmptyString),
-  });
-
-  /**
-   * IAM role set configuration
-   */
-  static readonly roleSetConfig = t.interface({
-    /**
-     * Role set deployment targets
-     */
-    deploymentTargets: t.deploymentTargets,
-    /**
-     * List of role objects
-     */
-    roles: t.array(this.roleConfig),
-  });
-
-  /**
-   * IAM policy configuration
-   */
-  static readonly policyConfig = t.interface({
-    name: t.nonEmptyString,
-    policy: t.nonEmptyString,
-  });
-
-  /**
-   * IAM policy set configuration
-   */
-  static readonly policySetConfig = t.interface({
-    deploymentTargets: t.deploymentTargets,
-    policies: t.array(this.policyConfig),
-  });
-
-  /**
-   * IAM configuration
-   */
-  static readonly iamConfig = t.interface({
-    providers: t.optional(t.array(this.samlProviderConfig)),
-    policySets: t.optional(t.array(this.policySetConfig || [])),
-    roleSets: t.optional(t.array(this.roleSetConfig)),
-    groupSets: t.optional(t.array(this.groupSetConfig)),
-    userSets: t.optional(t.array(this.userSetConfig)),
-  });
+export class ManagedActiveDirectorySharedOuConfig implements i.IManagedActiveDirectorySharedOuConfig {
+  readonly organizationalUnits: string[] = [];
+  readonly excludedAccounts: string[] | undefined = undefined;
 }
 
-/**
- * SAML provider configuration
- */
-export class SamlProviderConfig implements t.TypeOf<typeof IamConfigTypes.samlProviderConfig> {
-  /**
-   * The name of the provider to create.
-   *
-   * This parameter allows a string of characters consisting of upper and lowercase alphanumeric characters with no spaces. You can also include any of the following characters: _+=,.@-
-   *
-   * Length must be between 1 and 128 characters.
-   *
-   * @default a CloudFormation generated name
-   */
+export class ManagedActiveDirectorySecretConfig implements i.IManagedActiveDirectorySecretConfig {
+  readonly adminSecretName: string | undefined = undefined;
+  readonly account: string | undefined = undefined;
+  readonly region: t.Region = 'us-east-1';
+}
+
+export class ActiveDirectoryConfigurationInstanceUserDataConfig
+  implements i.IActiveDirectoryConfigurationInstanceUserDataConfig
+{
+  readonly scriptName = '';
+  readonly scriptFilePath = '';
+}
+
+export class ActiveDirectoryPasswordPolicyConfig implements i.IActiveDirectoryPasswordPolicyConfig {
+  readonly history = 24;
+  readonly maximumAge = 90;
+  readonly minimumAge = 1;
+  readonly minimumLength = 14;
+  readonly complexity = true;
+  readonly reversible = false;
+  readonly failedAttempts = 6;
+  readonly lockoutDuration = 30;
+  readonly lockoutAttemptsReset = 30;
+}
+
+export class ActiveDirectoryUserConfig implements i.IActiveDirectoryUserConfig {
+  readonly name = '';
+  readonly email = '';
+  readonly groups = [];
+}
+
+export class ActiveDirectoryConfigurationInstanceConfig implements i.IActiveDirectoryConfigurationInstanceConfig {
+  readonly instanceType = '';
+  readonly vpcName = '';
+  readonly imagePath = '';
+  readonly securityGroupInboundSources = [];
+  readonly instanceRole = '';
+  readonly enableTerminationProtection: boolean | undefined = undefined;
+  readonly subnetName = '';
+  readonly userDataScripts: ActiveDirectoryConfigurationInstanceUserDataConfig[] = [];
+  readonly adGroups: string[] = [];
+  readonly adPerAccountGroups: string[] = [];
+  readonly adConnectorGroup = '';
+  readonly adUsers: ActiveDirectoryUserConfig[] = [];
+  readonly adPasswordPolicy: ActiveDirectoryPasswordPolicyConfig = new ActiveDirectoryPasswordPolicyConfig();
+}
+
+export class ManagedActiveDirectoryLogConfig implements i.IManagedActiveDirectoryLogConfig {
+  readonly groupName = '';
+  readonly retentionInDays: number | undefined = undefined;
+}
+
+export class ManagedActiveDirectoryVpcSettingsConfig implements i.IManagedActiveDirectoryVpcSettingsConfig {
+  readonly vpcName = '';
+  readonly subnets = [];
+}
+
+export class ManagedActiveDirectoryConfig implements i.IManagedActiveDirectoryConfig {
+  readonly name = '';
+  readonly account = '';
+  readonly region: t.Region = 'us-east-1';
+  readonly dnsName = '';
+  readonly netBiosDomainName = '';
+  readonly description: string | undefined = undefined;
+  readonly edition = 'Standard';
+  readonly vpcSettings: ManagedActiveDirectoryVpcSettingsConfig = new ManagedActiveDirectoryVpcSettingsConfig();
+  readonly resolverRuleName = '';
+  readonly secretConfig: ManagedActiveDirectorySecretConfig | undefined = undefined;
+  readonly sharedOrganizationalUnits: ManagedActiveDirectorySharedOuConfig | undefined = undefined;
+  readonly sharedAccounts: string[] | undefined = undefined;
+  readonly logs: ManagedActiveDirectoryLogConfig | undefined = undefined;
+  readonly activeDirectoryConfigurationInstance: ActiveDirectoryConfigurationInstanceConfig | undefined = undefined;
+}
+
+export class SamlProviderConfig implements i.ISamlProviderConfig {
   readonly name: string = '';
-  /**
-   * SAML metadata document XML file, this file must be present in config repository
-   */
   readonly metadataDocument: string = '';
 }
 
-/**
- * IAM User configuration
- */
-export class UserConfig implements t.TypeOf<typeof IamConfigTypes.userConfig> {
-  /**
-   * A name for the IAM user. For valid values, see the UserName parameter for the CreateUser action in the IAM API Reference.
-   * If you don't specify a name, AWS CloudFormation generates a unique physical ID and uses that ID for the user name.
-   *
-   * If you specify a name, you cannot perform updates that require replacement of this resource.
-   * You can perform updates that require no or some interruption. If you must replace the resource, specify a new name.
-   */
+export class UserConfig implements i.IUserConfig {
   readonly username: string = '';
-  /**
-   * AWS supports permissions boundaries for IAM entities (users or roles).
-   * A permissions boundary is an advanced feature for using a managed policy to set the maximum permissions that an identity-based policy can grant to an IAM entity.
-   * An entity's permissions boundary allows it to perform only the actions that are allowed by both its identity-based policies and its permissions boundaries.
-   *
-   * Permission boundary is derived from iam-policies/boundary-policy.json file in config repository
-   */
   readonly boundaryPolicy: string = '';
-  /**
-   * Group to add this user to.
-   */
   readonly group: string = '';
+  readonly disableConsoleAccess?: boolean | undefined = undefined;
 }
 
-/**
- * User set configuration
- */
-export class UserSetConfig implements t.TypeOf<typeof IamConfigTypes.userSetConfig> {
-  /**
-   * User set's deployment target
-   */
+export class UserSetConfig implements i.IUserSetConfig {
   readonly deploymentTargets: t.DeploymentTargets = new t.DeploymentTargets();
-  /**
-   * List os user objects
-   */
   readonly users: UserConfig[] = [];
 }
 
-/**
- * IAM policies configuration
- */
-export class PoliciesConfig implements t.TypeOf<typeof IamConfigTypes.policiesConfig> {
-  /**
-   * List of AWS managed policies
-   */
-  readonly awsManaged: string[] = [];
-  /**
-   * List of Customer managed policies
-   */
-  readonly customerManaged: string[] = [];
+export class PoliciesConfig implements i.IPoliciesConfig {
+  readonly awsManaged: string[] | undefined = undefined;
+  readonly customerManaged: string[] | undefined = undefined;
 }
 
-/**
- * IAM group configuration
- */
-export class GroupConfig implements t.TypeOf<typeof IamConfigTypes.groupConfig> {
-  /**
-   * A name for the IAM group. For valid values, see the GroupName parameter for the CreateGroup action in the IAM API Reference.
-   * If you don't specify a name, AWS CloudFormation generates a unique physical ID and uses that ID for the group name.
-   *
-   * If you specify a name, you must specify the CAPABILITY_NAMED_IAM value to acknowledge your template's capabilities.
-   * For more information, see Acknowledging IAM Resources in AWS CloudFormation Templates.
-   */
+export class GroupConfig implements i.IGroupConfig {
   readonly name: string = '';
-  /**
-   * List of policy objects
-   */
   readonly policies: PoliciesConfig | undefined = undefined;
 }
 
-/**
- * IAM group set configuration
- */
-export class GroupSetConfig implements t.TypeOf<typeof IamConfigTypes.groupSetConfig> {
-  /**
-   * Group set's deployment targets
-   */
+export class GroupSetConfig implements i.IGroupSetConfig {
   readonly deploymentTargets: t.DeploymentTargets = new t.DeploymentTargets();
-  /**
-   * List of IAM group objects
-   */
   readonly groups: GroupConfig[] = [];
 }
 
-/**
- * Assumedby configuration
- */
-export class AssumedByConfig implements t.TypeOf<typeof IamConfigTypes.assumedByConfig> {
-  /**
-   * IAM principal of either service, account or provider type.
-   *
-   * IAM principal of sns service type (i.e. new ServicePrincipal('sns.amazonaws.com')), which can assume this role.
-   */
+export class AssumedByConfig implements i.IAssumedByConfig {
   readonly principal: string = '';
-  /**
-   * Type of IAM principal type like service, account or provider, which can assume this role.
-   */
-  readonly type!: t.TypeOf<typeof IamConfigTypes.assumedByTypeEnum>;
+  readonly type!: t.AssumedByType;
 }
 
-/**
- * IAM Role configuration
- */
-export class RoleConfig implements t.TypeOf<typeof IamConfigTypes.roleConfig> {
-  /**
-   * AssumedBy configuration
-   */
+export class RoleConfig implements i.IRoleConfig {
   readonly assumedBy: AssumedByConfig[] = [];
-  /**
-   * Indicates whether role is used for EC2 instance profile
-   */
+  readonly externalIds?: string[] | undefined;
   readonly instanceProfile: boolean | undefined = undefined;
-  /**
-   * A permissions boundary configuration
-   */
   readonly boundaryPolicy: string = '';
-  /**
-   * A name for the role
-   */
   readonly name: string = '';
-  /**
-   * List of policies for the role
-   */
   readonly policies: PoliciesConfig | undefined = undefined;
 }
 
-/**
- * Role set configuration
- */
-export class RoleSetConfig implements t.TypeOf<typeof IamConfigTypes.roleSetConfig> {
-  /**
-   * Role set deployment targets
-   */
-  readonly deploymentTargets: t.DeploymentTargets = new t.DeploymentTargets();
-  /**
-   * List of role objects
-   */
-  readonly roles: RoleConfig[] = [];
+export class IdentityCenterConfig implements i.IIdentityCenterConfig {
+  readonly name: string = '';
+  readonly delegatedAdminAccount: string | undefined = undefined;
+  readonly identityCenterPermissionSets: IdentityCenterPermissionSetConfig[] | undefined = undefined;
+  readonly identityCenterAssignments: IdentityCenterAssignmentConfig[] | undefined = undefined;
 }
 
-/**
- * IAM policy configuration
- */
-export class PolicyConfig implements t.TypeOf<typeof IamConfigTypes.policyConfig> {
-  /**
-   * A name for the policy
-   */
+export class PolicyConfig implements i.IPolicyConfig {
   readonly name: string = '';
-  /**
-   * A XML file containing policy boundary definition
-   */
   readonly policy: string = '';
 }
 
-/**
- * Policy set configuration
- */
-export class PolicySetConfig implements t.TypeOf<typeof IamConfigTypes.policySetConfig> {
-  /**
-   * Policy set deployment targets
-   */
+export class CustomerManagedPolicyReferenceConfig implements i.ICustomerManagedPolicyReferenceConfig {
+  readonly name: string = '';
+  readonly path: string | undefined = undefined;
+}
+
+export class PermissionsBoundaryConfig implements i.IPermissionsBoundaryConfig {
+  readonly awsManagedPolicyName: string | undefined = undefined;
+  readonly customerManagedPolicy: CustomerManagedPolicyReferenceConfig | undefined = undefined;
+}
+
+export class IdentityCenterPoliciesConfig implements i.IIdentityCenterPoliciesConfig {
+  readonly awsManaged: string[] | undefined = undefined;
+  readonly customerManaged: string[] | undefined = undefined;
+  readonly acceleratorManaged: string[] | undefined = undefined;
+  readonly inlinePolicy: string | undefined = undefined;
+  readonly permissionsBoundary: PermissionsBoundaryConfig | undefined = undefined;
+}
+
+export class IdentityCenterPermissionSetConfig implements i.IIdentityCenterPermissionSetConfig {
+  readonly name: string = '';
+  readonly policies: IdentityCenterPoliciesConfig | undefined = undefined;
+  readonly sessionDuration: number | undefined = undefined;
+  readonly description: string | undefined = undefined;
+}
+
+export class IdentityCenterAssignmentPrincipalConfig implements i.IIdentityCenterAssignmentPrincipalConfig {
+  readonly type: string = '';
+  readonly name: string = '';
+}
+
+export class IdentityCenterAssignmentConfig implements i.IIdentityCenterAssignmentConfig {
+  readonly name: string = '';
+  readonly permissionSetName: string = '';
+  readonly principalId: string | undefined = undefined;
+  readonly principalType: t.PrincipalType | undefined = undefined;
+  readonly principals: IdentityCenterAssignmentPrincipalConfig[] | undefined = undefined;
   readonly deploymentTargets: t.DeploymentTargets = new t.DeploymentTargets();
+}
+
+export class RoleSetConfig implements i.IRoleSetConfig {
+  readonly deploymentTargets: t.DeploymentTargets = new t.DeploymentTargets();
+  readonly path: string | undefined = undefined;
+  readonly roles: RoleConfig[] = [];
+}
+
+export class PolicySetConfig implements i.IPolicySetConfig {
+  readonly deploymentTargets: t.DeploymentTargets = new t.DeploymentTargets();
+  readonly identityCenterDependency: boolean | undefined = undefined;
   readonly policies: PolicyConfig[] = [];
 }
 
-/**
- * IAM configuration
- */
-export class IamConfig implements t.TypeOf<typeof IamConfigTypes.iamConfig> {
+export class IamConfig implements i.IIamConfig {
   /**
    * A name for the iam config file in config repository
    *
@@ -359,170 +220,34 @@ export class IamConfig implements t.TypeOf<typeof IamConfigTypes.iamConfig> {
    */
   static readonly FILENAME = 'iam-config.yaml';
 
-  /**
-   * SAML provider configuration
-   * To configure SAML configuration, you need to provide the following values for this parameter.
-   * Replace provider name and metadata document file. Document file must be in config repository
-   *
-   * @example
-   * ```
-   * providers:
-   *  name: <PROVIDER_NAME>,
-   *  metadataDocument: <METADATA_DOCUMENT_FILE>,
-   */
   readonly providers: SamlProviderConfig[] = [];
-
-  /**
-   * Policy set configuration.
-   *
-   * To configure IAM policy named Default-Boundary-Policy with permission boundary defined in iam-policies/boundary-policy.json file, you need to provide following values for this parameter.
-   *
-   * @example
-   *```
-   * policySets:
-   *   - deploymentTargets:
-   *       organizationalUnits:
-   *         - Root
-   *     policies:
-   *       - name: Default-Boundary-Policy
-   *         policy: iam-policies/boundary-policy.json
-   * ```
-   */
   readonly policySets: PolicySetConfig[] = [];
-
-  /**
-   * Role sets configuration
-   *
-   * To configure EC2-Default-SSM-AD-Role role to be assumed by ec2 service into Root and Infrastructure organizational units,
-   * you need to provide following values for this parameter. This role will have AmazonSSMManagedInstanceCore, AmazonSSMDirectoryServiceAccess and CloudWatchAgentServerPolicy policy
-   * with permission boundary defined by Default-Boundary-Policy
-   *
-   * @example
-   * ```
-   * roleSets:
-   *   - deploymentTargets:
-   *       organizationalUnits:
-   *         - Root
-   *     roles:
-   *       - name: EC2-Default-SSM-AD-Role
-   *         assumedBy:
-   *           - type: service
-   *             principal: ec2.amazonaws.com
-   *         policies:
-   *           awsManaged:
-   *             - AmazonSSMManagedInstanceCore
-   *             - AmazonSSMDirectoryServiceAccess
-   *             - CloudWatchAgentServerPolicy
-   *         boundaryPolicy: Default-Boundary-Policy
-   * ```
-   */
   readonly roleSets: RoleSetConfig[] = [];
-
-  /**
-   * Group set configuration
-   *
-   * To configure IAM group named Administrators into Root and Infrastructure organizational units, you need to provide following values for this parameter.
-   *
-   * @example
-   * ```
-   * groupSets:
-   *   - deploymentTargets:
-   *       organizationalUnits:
-   *         - Root
-   *     groups:
-   *       - name: Administrators
-   *         policies:
-   *           awsManaged:
-   *             - AdministratorAccess
-   * ```
-   */
   readonly groupSets: GroupSetConfig[] = [];
-
-  /**
-   * User set configuration
-   *
-   * To configure breakGlassUser01 user into Administrators in Management account, you need to provide following values for this parameter.
-   *
-   * @example
-   * ```
-   * userSets:
-   *   - deploymentTargets:
-   *       accounts:
-   *         - Management
-   *     users:
-   *       - username: breakGlassUser01
-   *         group: Administrators
-   *         boundaryPolicy: Default-Boundary-Policy
-   * ```
-   *
-   */
   readonly userSets: UserSetConfig[] = [];
-
-  /**
-   * Validation error message list
-   */
-  readonly errors: string[] = [];
+  readonly identityCenter: IdentityCenterConfig | undefined = undefined;
+  readonly managedActiveDirectories: ManagedActiveDirectoryConfig[] | undefined = undefined;
 
   /**
    *
    * @param values
-   * @param configDir
    */
-  constructor(values?: t.TypeOf<typeof IamConfigTypes.iamConfig>, configDir?: string) {
-    //
-    // Validation errors
-    //
-
-    if (values) {
-      const policies: { name: string; policyFile: string }[] = [];
-      for (const policySet of values.policySets ?? []) {
-        for (const policy of policySet.policies) {
-          policies.push({ name: policy.name, policyFile: policy.policy });
-        }
-      }
-
-      // Validate policy file existence
-      this.validatePolicyFileExists(policies, configDir);
-
-      if (this.errors.length) {
-        throw new Error(`${IamConfig.FILENAME} has ${this.errors.length} issues: ${this.errors.join(' ')}`);
-      }
-
-      Object.assign(this, values);
-    }
-  }
-
-  /**
-   * Validate policy file existence
-   * @param policies
-   * @param configDir
-   * @returns
-   */
-  private validatePolicyFileExists(
-    policies: {
-      name: string;
-      policyFile: string;
-    }[],
-    configDir?: string,
-  ) {
-    if (configDir) {
-      for (const policy of policies) {
-        if (!fs.existsSync(path.join(configDir, policy.policyFile))) {
-          this.errors.push(`Policy definition file ${policy.policyFile} not found, for ${policy.name} !!!`);
-        }
-      }
-    }
+  constructor(values?: i.IIamConfig) {
+    Object.assign(this, values);
   }
 
   /**
    * Load from config file content
    * @param dir
+   * @param replacementsConfig
    * @returns
    */
-  static load(dir: string): IamConfig {
-    const buffer = fs.readFileSync(path.join(dir, IamConfig.FILENAME), 'utf8');
-    const values = t.parse(IamConfigTypes.iamConfig, yaml.load(buffer));
-    return new IamConfig(values, dir);
+
+  static load(dir: string, replacementsConfig?: ReplacementsConfig): IamConfig {
+    const initialBuffer = fs.readFileSync(path.join(dir, IamConfig.FILENAME), 'utf8');
+    const buffer = replacementsConfig ? replacementsConfig.preProcessBuffer(initialBuffer) : initialBuffer;
+    const values = t.parseIamConfig(yaml.load(buffer));
+    return new IamConfig(values);
   }
 
   /**
@@ -531,12 +256,103 @@ export class IamConfig implements t.TypeOf<typeof IamConfigTypes.iamConfig> {
    */
   static loadFromString(content: string): IamConfig | undefined {
     try {
-      const values = t.parse(IamConfigTypes.iamConfig, yaml.load(content));
+      const values = t.parseIamConfig(yaml.load(content));
       return new IamConfig(values);
     } catch (e) {
-      console.log('[iam-config] Error parsing input, global config undefined');
-      console.log(`${e}`);
-      return undefined;
+      logger.error('Error parsing input, iam config undefined');
+      logger.error(`${e}`);
+      throw new Error('Could not load iam configuration');
     }
+  }
+
+  public getManageActiveDirectoryAdminSecretName(directoryName: string): string {
+    let directoryFound = false;
+    for (const managedActiveDirectory of this.managedActiveDirectories ?? []) {
+      if (managedActiveDirectory.name === directoryName) {
+        directoryFound = true;
+        if (managedActiveDirectory.secretConfig) {
+          if (managedActiveDirectory.secretConfig.adminSecretName) {
+            return managedActiveDirectory.secretConfig.adminSecretName;
+          }
+        }
+      }
+    }
+    if (directoryFound) {
+      return 'admin';
+    }
+    logger.error(`getManageActiveDirectoryAdminSecretName Directory ${directoryName} not found in iam-config file`);
+    throw new Error('configuration validation failed.');
+  }
+
+  public getManageActiveDirectorySecretAccountName(directoryName: string): string {
+    let directoryFound = false;
+    let directoryAccount = '';
+    for (const managedActiveDirectory of this.managedActiveDirectories ?? []) {
+      if (managedActiveDirectory.name === directoryName) {
+        directoryFound = true;
+        directoryAccount = managedActiveDirectory.account;
+        if (managedActiveDirectory.secretConfig) {
+          if (managedActiveDirectory.secretConfig.account) {
+            return managedActiveDirectory.secretConfig.account;
+          } else {
+            managedActiveDirectory.account;
+          }
+        }
+      }
+    }
+    if (directoryFound) {
+      return directoryAccount;
+    }
+    logger.error(`getManageActiveDirectoryAdminSecretName Directory ${directoryName} not found in iam-config file`);
+    throw new Error('configuration validation failed.');
+  }
+
+  public getManageActiveDirectorySecretRegion(directoryName: string): string {
+    for (const managedActiveDirectory of this.managedActiveDirectories ?? []) {
+      if (managedActiveDirectory.name === directoryName) {
+        if (managedActiveDirectory.secretConfig) {
+          if (managedActiveDirectory.secretConfig.region) {
+            return managedActiveDirectory.secretConfig.region;
+          } else {
+            return managedActiveDirectory.region;
+          }
+        }
+      }
+    }
+    logger.error(`getManageActiveDirectoryAdminSecretName Directory ${directoryName} not found in iam-config file`);
+    throw new Error('configuration validation failed.');
+  }
+
+  public getManageActiveDirectorySharedAccountNames(directoryName: string, configDir: string): string[] {
+    const activeDirectories = this.managedActiveDirectories ?? [];
+    const managedActiveDirectory = activeDirectories.find(
+      managedActiveDirectory => managedActiveDirectory.name === directoryName,
+    );
+    if (!managedActiveDirectory) {
+      logger.error(`getManageActiveDirectoryAdminSecretName Directory ${directoryName} not found in iam-config file`);
+      throw new Error('configuration validation failed.');
+    }
+    const accountsConfig = AccountsConfig.load(configDir);
+
+    const sharedOuAccounts =
+      managedActiveDirectory.sharedOrganizationalUnits?.organizationalUnits
+        .map(ou => this.getAccountsByOU(ou, accountsConfig))
+        .flat() ?? [];
+    const sharedAccounts = managedActiveDirectory.sharedAccounts ?? [];
+    const excludedAccounts = managedActiveDirectory.sharedOrganizationalUnits?.excludedAccounts ?? [];
+    const accounts = [...sharedAccounts, ...sharedOuAccounts];
+    const filteredAccounts = accounts.filter(account => !excludedAccounts.includes(account));
+    return [...new Set(filteredAccounts)];
+  }
+
+  private getAccountsByOU(ouName: string, accountsConfig: AccountsConfig) {
+    const allAccountItems = [...accountsConfig.mandatoryAccounts, ...accountsConfig.workloadAccounts];
+    const allAccounts = allAccountItems.map(accountItem => accountItem.name);
+    if (ouName === 'Root') {
+      return allAccounts;
+    }
+    return allAccountItems
+      .filter(accountItem => accountItem.organizationalUnit === ouName)
+      .map(accountItem => accountItem.name);
   }
 }

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,10 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
+import { setOrganizationsClient } from '@aws-accelerator/utils/lib/set-organizations-client';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { EnablePolicyTypeCommand, ListRootsCommand } from '@aws-sdk/client-organizations';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 
 /**
  * enable-policy-type - lambda handler
@@ -21,7 +22,7 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -32,25 +33,19 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
     case 'Create':
       const policyType = event.ResourceProperties['policyType'];
       const partition = event.ResourceProperties['partition'];
-
-      if (partition === 'aws-us-gov' && policyType == ('TAG_POLICY' || 'BACKUP_POLICY')) {
-        throw new Error(`Policy Type ${policyType} not supported.`);
-      }
+      const solutionId = process.env['SOLUTION_ID'];
 
       //
       // Obtain an Organizations client
       //
-      let organizationsClient: AWS.Organizations;
-      if (partition === 'aws-us-gov') {
-        organizationsClient = new AWS.Organizations({ region: 'us-gov-west-1' });
-      } else {
-        organizationsClient = new AWS.Organizations({ region: 'us-east-1' });
-      }
+      const organizationsClient = setOrganizationsClient(partition, solutionId);
 
       // Verify policy type from the listRoots call
       let nextToken: string | undefined = undefined;
       do {
-        const page = await throttlingBackOff(() => organizationsClient.listRoots({ NextToken: nextToken }).promise());
+        const page = await throttlingBackOff(() =>
+          organizationsClient.send(new ListRootsCommand({ NextToken: nextToken })),
+        );
         for (const orgRoot of page.Roots ?? []) {
           if (orgRoot.Name === 'Root') {
             if (orgRoot.PolicyTypes?.find(item => item.Type === policyType && item.Status === 'ENABLED')) {
@@ -61,7 +56,7 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
             }
 
             await throttlingBackOff(() =>
-              organizationsClient.enablePolicyType({ PolicyType: policyType, RootId: orgRoot.Id! }).promise(),
+              organizationsClient.send(new EnablePolicyTypeCommand({ PolicyType: policyType, RootId: orgRoot.Id! })),
             );
 
             return {

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -13,6 +13,7 @@
 
 import * as cdk from 'aws-cdk-lib';
 import { MacieExportConfigClassification } from '../../lib/aws-macie/macie-export-config-classification';
+import { snapShotTest } from '../snapshot-test';
 
 const testNamePrefix = 'Construct(MacieExportConfigClassification): ';
 
@@ -20,20 +21,19 @@ const testNamePrefix = 'Construct(MacieExportConfigClassification): ';
 const stack = new cdk.Stack();
 
 new MacieExportConfigClassification(stack, 'AwsMacieUpdateExportConfigClassification', {
+  publishPolicyFindings: true,
+  findingPublishingFrequency: 'ONE_HOUR',
+  publishClassificationFindings: true,
   bucketName: 'bucketName',
   keyPrefix: `111111111111-aws-macie-export-config`,
   logRetentionInDays: 3653,
-  kmsKey: new cdk.aws_kms.Key(stack, 'Key', {}),
+  bucketKmsKey: new cdk.aws_kms.Key(stack, 'BucketKey', {}),
+  logKmsKey: new cdk.aws_kms.Key(stack, 'LogKey', {}),
 });
 
 /**
  * MacieExportConfigClassification construct test
  */
 describe('MacieExportConfigClassification', () => {
-  /**
-   * Number of Lambda function resource test
-   */
-  test(`${testNamePrefix} Lambda function resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Lambda::Function', 1);
-  });
+  snapShotTest(testNamePrefix, stack);
 });

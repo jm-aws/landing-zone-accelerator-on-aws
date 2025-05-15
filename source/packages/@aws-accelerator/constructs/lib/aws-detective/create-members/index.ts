@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,7 +11,9 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { chunkArray, getGlobalRegion } from '@aws-accelerator/utils/lib/common-functions';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 import * as AWS from 'aws-sdk';
 AWS.config.logger = console;
 
@@ -21,7 +23,7 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       Status: string | undefined;
       StatusCode: number | undefined;
@@ -30,15 +32,13 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 > {
   const region = event.ResourceProperties['region'];
   const partition = event.ResourceProperties['partition'];
-
-  let organizationsClient: AWS.Organizations;
-  if (partition === 'aws-us-gov') {
-    organizationsClient = new AWS.Organizations({ region: 'us-gov-west-1' });
-  } else {
-    organizationsClient = new AWS.Organizations({ region: 'us-east-1' });
-  }
-
-  const detectiveClient = new AWS.Detective({ region: region });
+  const globalRegion = getGlobalRegion(partition);
+  const chunkSize = process.env['CHUNK_SIZE'] ? parseInt(process.env['CHUNK_SIZE']) : 50;
+  const organizationsClient = new AWS.Organizations({
+    region: globalRegion,
+    customUserAgent: process.env['SOLUTION_ID'],
+  });
+  const detectiveClient = new AWS.Detective({ region: region, customUserAgent: process.env['SOLUTION_ID'] });
 
   const graphArn = await getGraphArn(detectiveClient);
 
@@ -60,9 +60,14 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         nextToken = page.NextToken;
       } while (nextToken);
 
-      await throttlingBackOff(() =>
-        detectiveClient.createMembers({ GraphArn: graphArn!, Accounts: allAccounts }).promise(),
-      );
+      const chunkedAccountsForCreate = chunkArray(allAccounts, chunkSize);
+
+      for (const accounts of chunkedAccountsForCreate) {
+        console.log(`Initiating createMembers request for ${accounts.length} accounts`);
+        await throttlingBackOff(() =>
+          detectiveClient.createMembers({ GraphArn: graphArn!, Accounts: accounts }).promise(),
+        );
+      }
 
       return { Status: 'Success', StatusCode: 200 };
 
@@ -81,9 +86,14 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
       } while (nextToken);
 
       if (existingMemberAccountIds.length > 0) {
-        await throttlingBackOff(() =>
-          detectiveClient.deleteMembers({ AccountIds: existingMemberAccountIds, GraphArn: graphArn! }).promise(),
-        );
+        const chunkedAccountsForDelete = chunkArray(existingMemberAccountIds, chunkSize);
+
+        for (const existingMemberAccountIdBatch of chunkedAccountsForDelete) {
+          console.log(`Initiating deleteMembers request for ${existingMemberAccountIdBatch.length} accounts`);
+          await throttlingBackOff(() =>
+            detectiveClient.deleteMembers({ AccountIds: existingMemberAccountIdBatch, GraphArn: graphArn! }).promise(),
+          );
+        }
       }
 
       return { Status: 'Success', StatusCode: 200 };

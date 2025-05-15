@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,9 +12,25 @@
  */
 
 export * from './lib/accounts-config';
-export * from './lib/common-types';
+export * from './lib/common';
+export * from './lib/customizations-config';
 export * from './lib/global-config';
 export * from './lib/iam-config';
 export * from './lib/network-config';
 export * from './lib/organization-config';
+export * from './lib/replacements-config';
 export * from './lib/security-config';
+export * from './lib/models/accounts-config';
+export * from './lib/models/global-config';
+export * from './lib/models/iam-config';
+export * from './lib/models/organization-config';
+export * from './lib/models/security-config';
+export * from './validator/accounts-config-validator';
+export * from './validator/customizations-config-validator';
+export * from './validator/global-config-validator';
+export * from './validator/iam-config-validator';
+export * from './validator/organization-config-validator';
+export * from './validator/network-config-validator/network-config-validator';
+export * from './validator/security-config-validator';
+export * from './validator/replacements-config-validator';
+export * from './validator/common/common-validator-functions';

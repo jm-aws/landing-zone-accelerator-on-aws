@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,7 @@
  *  and limitations under the License.
  */
 
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { v4 as uuidv4 } from 'uuid';
@@ -30,17 +31,29 @@ export interface SsmParameterLookupProps {
    */
   readonly accountId: string;
   /**
+   * Parameter region
+   */
+  readonly parameterRegion: string;
+  /**
    * The name of the cross account role to use when accessing
    */
-  readonly roleName: string;
+  readonly roleName?: string;
   /**
    * Custom resource lambda log group encryption key
    */
-  readonly kmsKey?: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays?: number;
+  /**
+   * Accelerator Prefix
+   */
+  readonly acceleratorPrefix: string;
+  /**
+   * Resolved parameter value
+   */
+  readonly resolvedValue?: string;
 }
 
 /**
@@ -54,11 +67,9 @@ export class SsmParameterLookup extends Construct {
 
     const RESOURCE_TYPE = 'Custom::SsmGetParameterValue';
 
-    const roleArn = `arn:${cdk.Stack.of(this).partition}:iam::${props.accountId}:role/${props.roleName}`;
-
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'get-param-value/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       policyStatements: [
         {
           Sid: 'SsmGetParameterActions',
@@ -70,21 +81,26 @@ export class SsmParameterLookup extends Construct {
           Sid: 'StsAssumeRoleActions',
           Effect: cdk.aws_iam.Effect.ALLOW,
           Action: ['sts:AssumeRole'],
-          Resource: [roleArn],
+          Resource: [`arn:${cdk.Stack.of(this).partition}:iam::*:role/${props.acceleratorPrefix}*`],
         },
       ],
     });
+
+    const roleArn = props.roleName
+      ? `arn:${cdk.Stack.of(this).partition}:iam::${props.accountId}:role/${props.roleName}`
+      : '';
 
     const resource = new cdk.CustomResource(this, 'Resource', {
       resourceType: RESOURCE_TYPE,
       serviceToken: provider.serviceToken,
       properties: {
-        region: cdk.Stack.of(this).region,
+        parameterRegion: props.parameterRegion,
+        invokingRegion: cdk.Stack.of(this).region,
         parameterAccountID: props.accountId,
         parameterName: props.name,
         assumeRoleArn: roleArn,
         invokingAccountID: cdk.Stack.of(this).account,
-        uuid: uuidv4(),
+        uuid: props.resolvedValue ?? uuidv4(),
       },
     });
 

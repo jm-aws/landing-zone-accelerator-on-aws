@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,53 +12,69 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
 import * as fs from 'fs';
 import * as yaml from 'js-yaml';
 import { pascalCase } from 'pascal-case';
 import * as path from 'path';
-import { S3ServerAccessLogsBucketNamePrefix } from '../accelerator';
+import { DEFAULT_LAMBDA_RUNTIME } from '../../../utils/lib/lambda';
 
-import { Region } from '@aws-accelerator/config';
 import {
-  Bucket,
-  BucketEncryptionType,
-  Document,
-  GuardDutyDetectorConfig,
-  GuardDutyExportConfigDestinationTypes,
+  DeploymentTargets,
+  GuardDutyConfig,
+  Region,
+  ResourcePolicyEnforcementConfig,
+  SecurityHubConfig,
+} from '@aws-accelerator/config';
+import {
   AuditManagerDefaultReportsDestination,
   AuditManagerDefaultReportsDestinationTypes,
-  GuardDutyMembers,
+  Bucket,
+  BucketEncryptionType,
+  BucketReplicationProps,
   DetectiveGraphConfig,
   DetectiveMembers,
-  KeyLookup,
+  Document,
+  GuardDutyDetectorConfig,
+  GuardDutyMembers,
   MacieMembers,
-  Organization,
+  RemediationSsmDocument,
   SecurityHubMembers,
   SecurityHubRegionAggregation,
 } from '@aws-accelerator/constructs';
 
-import { Logger } from '../logger';
-import { AcceleratorStack, AcceleratorStackProps } from './accelerator-stack';
-import { KeyStack } from './key-stack';
-import { LifecycleRule } from '@aws-accelerator/constructs/lib/aws-s3/bucket';
 import { SnsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import {
+  AcceleratorKeyType,
+  AcceleratorStack,
+  AcceleratorStackProps,
+  NagSuppressionRuleIds,
+} from './accelerator-stack';
 
 export class SecurityAuditStack extends AcceleratorStack {
-  private readonly key: cdk.aws_kms.Key;
-  private organizationId: string;
+  private readonly s3Key: cdk.aws_kms.IKey | undefined;
+  private readonly cloudwatchKey: cdk.aws_kms.IKey | undefined;
+  private readonly centralLogsBucketKey: cdk.aws_kms.IKey;
+  private readonly replicationProps: BucketReplicationProps;
+  private readonly securityHubConfig: SecurityHubConfig;
   constructor(scope: Construct, id: string, props: AcceleratorStackProps) {
     super(scope, id, props);
 
-    this.key = new KeyLookup(this, 'AcceleratorKeyLookup', {
-      accountId: props.accountsConfig.getAuditAccountId(),
-      roleName: KeyStack.CROSS_ACCOUNT_ACCESS_ROLE_NAME,
-      keyArnParameterName: KeyStack.ACCELERATOR_KEY_ARN_PARAMETER_NAME,
+    this.s3Key = this.getAcceleratorKey(AcceleratorKeyType.S3_KEY);
+    this.cloudwatchKey = this.getAcceleratorKey(AcceleratorKeyType.CLOUDWATCH_KEY);
+    this.centralLogsBucketKey = this.getCentralLogsBucketKey(this.cloudwatchKey);
+    this.securityHubConfig = this.props.securityConfig.centralSecurityServices.securityHub;
+    this.replicationProps = {
+      destination: {
+        bucketName: this.centralLogsBucketName,
+        accountId: props.accountsConfig.getLogArchiveAccountId(),
+        keyArn: this.centralLogsBucketKey.keyArn,
+      },
+      kmsKey: this.cloudwatchKey,
       logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
-    }).getKey();
-
-    this.organizationId = props.organizationConfig.enable ? new Organization(this, 'Organization').id : '';
+      acceleratorPrefix: this.props.prefixes.accelerator,
+      useExistingRoles: this.props.useExistingRoles ?? false,
+    };
 
     //
     // Macie configuration
@@ -68,7 +84,7 @@ export class SecurityAuditStack extends AcceleratorStack {
     //
     // GuardDuty configuration
     //
-    this.configureGuardDuty();
+    this.configureGuardDuty(this.props.securityConfig.centralSecurityServices.guardduty);
 
     //
     // Audit Manager configuration
@@ -77,7 +93,7 @@ export class SecurityAuditStack extends AcceleratorStack {
 
     // Detective configuration
     //
-    this.configureDetectiveGraph();
+    this.configureDetective();
 
     //
     // SecurityHub configuration
@@ -87,110 +103,75 @@ export class SecurityAuditStack extends AcceleratorStack {
     //
     // SSM Automation Docs
     //
-    this.configureSsmAutomation();
+    this.configureSsmDocuments();
+
+    //
+    // SSM Automation doc for Data Perimeter
+    //
+    if (this.props.securityConfig.resourcePolicyEnforcement?.enable) {
+      this.configureResourcePolicyEnforcementSsmDocument();
+    }
 
     //
     // IAM Access Analyzer (Does not have a native service enabler)
     //
-    this.configureAccessAnalyzer();
+    this.configureIamAnalyzer();
 
     //
     // SNS Notification Topics and Subscriptions
     //
-    this.configureSnsSubscriptions();
+    this.configureSnsNotifications();
 
+    //
     // create lambda function to forward
     // control tower notifications to the management account
-    this.configureControlTowerNotificationForwarding();
+    //
+    this.configureControlTowerNotification();
 
-    Logger.info('[security-audit-stack] Completed stack synthesis');
+    //
+    // Create SSM Parameters
+    //
+    this.createSsmParameters();
+
+    //
+    // Create NagSuppressions
+    //
+    this.addResourceSuppressionsByPath();
+
+    this.logger.info('Completed stack synthesis');
+  }
+
+  private configureResourcePolicyEnforcementSsmDocument() {
+    const documentName = `${this.props.prefixes.accelerator}-${ResourcePolicyEnforcementConfig.DEFAULT_SSM_DOCUMENT_NAME}`;
+    new RemediationSsmDocument(this, 'ResourcePolicyEnforcementRemediationDocument', {
+      documentName,
+      sharedAccountIds: this.props.accountsConfig.getAccountIds(),
+      globalConfig: this.props.globalConfig,
+      cloudwatchKey: this.cloudwatchKey,
+    });
   }
 
   /**
    * Function to configure Macie
    */
   private configureMacie() {
-    Logger.debug(
-      `[security-audit-stack] centralSecurityServices.macie.enable: ${this.props.securityConfig.centralSecurityServices.macie.enable}`,
+    this.logger.debug(
+      `centralSecurityServices.macie.enable: ${this.props.securityConfig.centralSecurityServices.macie.enable}`,
     );
+
     if (this.props.securityConfig.centralSecurityServices.macie.enable) {
-      Logger.info(
-        `[security-audit-stack] Creating macie export config bucket - aws-accelerator-securitymacie-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-      );
-      const lifecycleRules: LifecycleRule[] = [];
-      for (const lifecycleRule of this.props.securityConfig.centralSecurityServices.macie.lifecycleRules ?? []) {
-        const noncurrentVersionTransitions = [];
-        for (const noncurrentVersionTransition of lifecycleRule.noncurrentVersionTransitions) {
-          noncurrentVersionTransitions.push({
-            storageClass: noncurrentVersionTransition.storageClass,
-            transitionAfter: noncurrentVersionTransition.transitionAfter,
-          });
-        }
-        const transitions = [];
-        for (const transition of lifecycleRule.transitions) {
-          transitions.push({
-            storageClass: transition.storageClass,
-            transitionAfter: transition.transitionAfter,
-          });
-        }
-        const rule: LifecycleRule = {
-          abortIncompleteMultipartUploadAfter: lifecycleRule.abortIncompleteMultipartUpload,
-          enabled: lifecycleRule.enabled,
-          expiration: lifecycleRule.expiration,
-          expiredObjectDeleteMarker: lifecycleRule.expiredObjectDeleteMarker,
-          id: lifecycleRule.id,
-          noncurrentVersionExpiration: lifecycleRule.noncurrentVersionExpiration,
-          noncurrentVersionTransitions,
-          transitions,
-        };
-        lifecycleRules.push(rule);
-      }
-
-      const bucket = new Bucket(this, 'AwsMacieExportConfigBucket', {
-        encryptionType: BucketEncryptionType.SSE_KMS,
-        s3BucketName: `aws-accelerator-org-macie-disc-repo-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-        kmsKey: this.key,
-        serverAccessLogsBucketName: `${S3ServerAccessLogsBucketNamePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-        lifecycleRules,
-      });
-
-      new cdk.aws_ssm.StringParameter(this, 'SsmParamOrganizationMacieExportConfigBucketName', {
-        parameterName: '/accelerator/organization/security/macie/discovery-repository/bucket-name',
-        stringValue: bucket.getS3Bucket().bucketName,
-      });
-
-      // Grant macie access to the bucket
-      bucket.getS3Bucket().grantReadWrite(new cdk.aws_iam.ServicePrincipal('macie.amazonaws.com'));
-
-      // Grant organization principals to use the bucket
-      bucket.getS3Bucket().addToResourcePolicy(
-        new cdk.aws_iam.PolicyStatement({
-          sid: 'Allow Organization principals to use of the bucket',
-          effect: cdk.aws_iam.Effect.ALLOW,
-          actions: ['s3:GetBucketLocation', 's3:PutObject'],
-          principals: [new cdk.aws_iam.AnyPrincipal()],
-          resources: [bucket.getS3Bucket().bucketArn, `${bucket.getS3Bucket().bucketArn}/*`],
-          conditions: {
-            StringEquals: {
-              'aws:PrincipalOrgID': this.organizationId,
-            },
-          },
-        }),
-      );
-
-      // We also tag the bucket to record the fact that it has access for macie principal.
-      cdk.Tags.of(bucket).add('aws-cdk:auto-macie-access-bucket', 'true');
+      this.logger.info(`Configuring Macie`);
 
       if (
-        this.props.securityConfig.centralSecurityServices.macie.excludeRegions!.indexOf(
+        this.props.securityConfig.centralSecurityServices.macie.excludeRegions.indexOf(
           cdk.Stack.of(this).region as Region,
         ) === -1
       ) {
-        Logger.info('[security-audit-stack] Adding Macie');
+        this.logger.info('Adding Macie');
 
         new MacieMembers(this, 'MacieMembers', {
           adminAccountId: cdk.Stack.of(this).account,
-          kmsKey: this.key,
+          kmsKey: this.cloudwatchKey,
           logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
         });
       }
@@ -199,113 +180,68 @@ export class SecurityAuditStack extends AcceleratorStack {
 
   /**
    * Function to configure GuardDuty
+   * @param guardDutyConfig GuardDutyConfig
    */
-  private configureGuardDuty() {
-    Logger.debug(
-      `[security-audit-stack] centralSecurityServices.guardduty.enable: ${this.props.securityConfig.centralSecurityServices.guardduty.enable}`,
-    );
+  private configureGuardDuty(guardDutyConfig: GuardDutyConfig) {
+    this.logger.debug(`centralSecurityServices.guardduty.enable: ${guardDutyConfig.enable}`);
 
-    if (this.props.securityConfig.centralSecurityServices.guardduty.enable) {
-      const lifecycleRules: LifecycleRule[] = [];
-      for (const lifecycleRule of this.props.securityConfig.centralSecurityServices.guardduty.lifecycleRules ?? []) {
-        const noncurrentVersionTransitions = [];
-        for (const noncurrentVersionTransition of lifecycleRule.noncurrentVersionTransitions) {
-          noncurrentVersionTransitions.push({
-            storageClass: noncurrentVersionTransition.storageClass,
-            transitionAfter: noncurrentVersionTransition.transitionAfter,
-          });
-        }
-        const transitions = [];
-        for (const transition of lifecycleRule.transitions) {
-          transitions.push({
-            storageClass: transition.storageClass,
-            transitionAfter: transition.transitionAfter,
-          });
-        }
-        const rule: LifecycleRule = {
-          abortIncompleteMultipartUploadAfter: lifecycleRule.abortIncompleteMultipartUpload,
-          enabled: lifecycleRule.enabled,
-          expiration: lifecycleRule.expiration,
-          expiredObjectDeleteMarker: lifecycleRule.expiredObjectDeleteMarker,
-          id: lifecycleRule.id,
-          noncurrentVersionExpiration: lifecycleRule.noncurrentVersionExpiration,
-          noncurrentVersionTransitions,
-          transitions,
-        };
-        lifecycleRules.push(rule);
+    if (this.validateExcludeRegionsAndDeploymentTargets(guardDutyConfig)) {
+      const guardDutyMemberAccountIds: string[] = [];
+      if (guardDutyConfig.deploymentTargets) {
+        guardDutyMemberAccountIds.push(
+          ...this.getAccountIdsFromDeploymentTargets(guardDutyConfig.deploymentTargets as DeploymentTargets),
+        );
       }
 
-      const bucket = new Bucket(this, 'GuardDutyPublishingDestinationBucket', {
-        encryptionType: BucketEncryptionType.SSE_KMS,
-        s3BucketName: `aws-accelerator-org-gduty-pub-dest-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-        kmsKey: this.key,
-        serverAccessLogsBucketName: `${S3ServerAccessLogsBucketNamePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-        lifecycleRules,
-      });
-
-      // AwsSolutions-S1: The S3 Bucket has server access logs disabled.
-      NagSuppressions.addResourceSuppressionsByPath(
-        this,
-        `${this.stackName}/GuardDutyPublishingDestinationBucket/Resource/Resource`,
-        [
-          {
-            id: 'AwsSolutions-S1',
-            reason:
-              'GuardDutyPublishingDestinationBucket has server access logs disabled till the task for access logging completed.',
-          },
-        ],
+      this.logger.info(
+        guardDutyMemberAccountIds.length > 0
+          ? `Enabling GuardDuty for accounts defined in GuardDuty deploymentTargets`
+          : 'Enabling GuardDuty for all existing accounts',
       );
 
-      new cdk.aws_ssm.StringParameter(this, 'SsmParamOrganizationGuardDutyPublishingDestinationBucketArn', {
-        parameterName: '/accelerator/organization/security/guardduty/publishing-destination/bucket-arn',
-        stringValue: bucket.getS3Bucket().bucketArn,
+      const [
+        s3Protection,
+        eksProtection,
+        enableEksAgent,
+        enableEc2MalwareProtection,
+        keepMalwareProtectionSnapshosts,
+        enableRdsProtection,
+        enableLambdaProtection,
+      ] = this.processRegionExclusions(guardDutyConfig);
+
+      const guardDutyMembers = new GuardDutyMembers(this, 'GuardDutyMembers', {
+        enableS3Protection: s3Protection,
+        enableEksProtection: eksProtection,
+        kmsKey: this.cloudwatchKey,
+        logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
+        guardDutyMemberAccountIds,
+        autoEnableOrgMembers: guardDutyConfig.autoEnableOrgMembers ?? true,
       });
 
-      // Grant guardduty access to the bucket
-      bucket.getS3Bucket().grantReadWrite(new cdk.aws_iam.ServicePrincipal('guardduty.amazonaws.com'));
-
-      // Grant organization principals to use the bucket
-      bucket.getS3Bucket().addToResourcePolicy(
-        new cdk.aws_iam.PolicyStatement({
-          sid: 'Allow Organization principals to use of the bucket',
-          effect: cdk.aws_iam.Effect.ALLOW,
-          actions: ['s3:GetBucketLocation', 's3:PutObject'],
-          principals: [new cdk.aws_iam.AnyPrincipal()],
-          resources: [bucket.getS3Bucket().bucketArn, `${bucket.getS3Bucket().bucketArn}/*`],
-          conditions: {
-            StringEquals: {
-              'aws:PrincipalOrgID': this.organizationId,
-            },
-          },
-        }),
-      );
-
-      // We also tag the bucket to record the fact that it has access for guardduty principal.
-      cdk.Tags.of(bucket).add('aws-cdk:auto-guardduty-access-bucket', 'true');
+      // Determine whether to update export frequency
+      const updateExportFrequency =
+        guardDutyConfig.exportConfiguration.enable && guardDutyConfig.exportConfiguration.overrideExisting;
 
       if (
-        this.props.securityConfig.centralSecurityServices.guardduty.excludeRegions!.indexOf(
-          cdk.Stack.of(this).region as Region,
-        ) === -1
+        s3Protection ||
+        eksProtection ||
+        enableEksAgent ||
+        enableEc2MalwareProtection ||
+        keepMalwareProtectionSnapshosts ||
+        enableRdsProtection ||
+        enableLambdaProtection ||
+        updateExportFrequency
       ) {
-        Logger.info('[security-audit-stack] Adding GuardDuty ');
-
-        const guardDutyMembers = new GuardDutyMembers(this, 'GuardDutyMembers', {
-          enableS3Protection: this.props.securityConfig.centralSecurityServices.guardduty.s3Protection.enable,
-          kmsKey: this.key,
-          logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
-        });
-
         new GuardDutyDetectorConfig(this, 'GuardDutyDetectorConfig', {
-          isExportConfigEnable:
-            this.props.securityConfig.centralSecurityServices.guardduty.exportConfiguration.enable &&
-            !this.props.securityConfig.centralSecurityServices.guardduty.s3Protection.excludeRegions!.includes(
-              cdk.Stack.of(this).region as Region,
-            ),
-          exportDestination: GuardDutyExportConfigDestinationTypes.S3,
-          exportFrequency:
-            this.props.securityConfig.centralSecurityServices.guardduty.exportConfiguration.exportFrequency,
-          kmsKey: this.key,
+          exportFrequency: updateExportFrequency ? guardDutyConfig.exportConfiguration.exportFrequency : undefined,
+          enableS3Protection: s3Protection,
+          enableEksProtection: eksProtection,
+          enableEc2MalwareProtection: enableEc2MalwareProtection,
+          keepMalwareProtectionSnapshosts: keepMalwareProtectionSnapshosts,
+          enableEksAgent: enableEksAgent,
+          enableRdsProtection: enableRdsProtection,
+          enableLambdaProtection: enableLambdaProtection,
+          kmsKey: this.cloudwatchKey,
           logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
         }).node.addDependency(guardDutyMembers);
       }
@@ -313,69 +249,105 @@ export class SecurityAuditStack extends AcceleratorStack {
   }
 
   /**
+   * Determine the GuardDuty protection settings based on configuration
+   * @param guardDutyConfig GuardDutyConfig
+   * @returns boolean[]
+   */
+  private processRegionExclusions(guardDutyConfig: GuardDutyConfig): boolean[] {
+    let s3Protection = guardDutyConfig.s3Protection.enable;
+    let eksProtection = guardDutyConfig.eksProtection?.enable ?? false;
+    let enableEksAgent = guardDutyConfig.eksProtection?.manageAgent ?? false;
+    let enableEc2MalwareProtection = guardDutyConfig.ec2Protection?.enable ?? false;
+    let keepMalwareProtectionSnapshosts = guardDutyConfig.ec2Protection?.keepSnapshots ?? false;
+    let enableRdsProtection = guardDutyConfig.rdsProtection?.enable ?? false;
+    let enableLambdaProtection = guardDutyConfig.lambdaProtection?.enable ?? false;
+
+    if (this.isRegionExcluded(guardDutyConfig.s3Protection.excludeRegions)) s3Protection = false;
+    if (this.isRegionExcluded(guardDutyConfig.eksProtection?.excludeRegions ?? [])) {
+      eksProtection = false;
+      enableEksAgent = false;
+    }
+    if (this.isRegionExcluded(guardDutyConfig.ec2Protection?.excludeRegions ?? [])) {
+      enableEc2MalwareProtection = false;
+      keepMalwareProtectionSnapshosts = false;
+    }
+    if (this.isRegionExcluded(guardDutyConfig.eksProtection?.excludeRegions ?? [])) enableRdsProtection = false;
+    if (this.isRegionExcluded(guardDutyConfig.eksProtection?.excludeRegions ?? [])) enableLambdaProtection = false;
+
+    return [
+      s3Protection,
+      eksProtection,
+      enableEksAgent,
+      enableEc2MalwareProtection,
+      keepMalwareProtectionSnapshosts,
+      enableRdsProtection,
+      enableLambdaProtection,
+    ];
+  }
+
+  /**
    * Function to configure Audit manager
    */
   private configureAuditManager() {
-    Logger.debug(
-      `[security-audit-stack] centralSecurityServices.auditManager?.enable: ${this.props.securityConfig.centralSecurityServices.auditManager?.enable}`,
+    this.logger.debug(
+      `centralSecurityServices.auditManager?.enable: ${this.props.securityConfig.centralSecurityServices.auditManager?.enable}`,
     );
 
     if (this.props.securityConfig.centralSecurityServices.auditManager?.enable) {
-      Logger.info('[security-audit-stack] Adding Audit Manager ');
-
-      const lifecycleRules: LifecycleRule[] = [];
-      for (const lifecycleRule of this.props.securityConfig.centralSecurityServices.auditManager?.lifecycleRules ??
-        []) {
-        const noncurrentVersionTransitions = [];
-        for (const noncurrentVersionTransition of lifecycleRule.noncurrentVersionTransitions) {
-          noncurrentVersionTransitions.push({
-            storageClass: noncurrentVersionTransition.storageClass,
-            transitionAfter: noncurrentVersionTransition.transitionAfter,
-          });
-        }
-        const transitions = [];
-        for (const transition of lifecycleRule.transitions) {
-          transitions.push({
-            storageClass: transition.storageClass,
-            transitionAfter: transition.transitionAfter,
-          });
-        }
-        const rule: LifecycleRule = {
-          abortIncompleteMultipartUploadAfter: lifecycleRule.abortIncompleteMultipartUpload,
-          enabled: lifecycleRule.enabled,
-          expiration: lifecycleRule.expiration,
-          expiredObjectDeleteMarker: lifecycleRule.expiredObjectDeleteMarker,
-          id: lifecycleRule.id,
-          noncurrentVersionExpiration: lifecycleRule.noncurrentVersionExpiration,
-          noncurrentVersionTransitions,
-          transitions,
-        };
-        lifecycleRules.push(rule);
+      if (
+        this.props.securityConfig.centralSecurityServices.auditManager.excludeRegions.includes(
+          cdk.Stack.of(this).region as Region,
+        )
+      ) {
+        this.logger.info(`Audit Manager enabled, but excluded in ${cdk.Stack.of(this).region} region.`);
+        return;
       }
 
+      this.logger.info('Adding Audit Manager ');
+      const serverAccessLogsBucketName = this.getServerAccessLogsBucketName();
       const bucket = new Bucket(this, 'AuditManagerPublishingDestinationBucket', {
-        encryptionType: BucketEncryptionType.SSE_KMS,
-        s3BucketName: `aws-accelerator-audmgr-pub-dest-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-        kmsKey: this.key,
-        serverAccessLogsBucketName: `${S3ServerAccessLogsBucketNamePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-        lifecycleRules,
+        encryptionType: this.isS3CMKEnabled ? BucketEncryptionType.SSE_KMS : BucketEncryptionType.SSE_S3,
+        s3BucketName: `${this.acceleratorResourceNames.bucketPrefixes.auditManager}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
+        kmsKey: this.s3Key,
+        serverAccessLogsBucketName,
+        s3LifeCycleRules: this.getS3LifeCycleRules(
+          this.props.securityConfig.centralSecurityServices.auditManager?.lifecycleRules,
+        ),
+        replicationProps: this.replicationProps,
       });
 
-      // AwsSolutions-S1: The S3 Bucket has server access logs disabled.
-      NagSuppressions.addResourceSuppressionsByPath(
-        this,
-        `${this.stackName}/AuditManagerPublishingDestinationBucket/Resource/Resource`,
-        [
+      cdk.Tags.of(bucket).add(`aws-cdk:auto-audit-manager-access-bucket`, 'true');
+
+      if (!serverAccessLogsBucketName) {
+        // AwsSolutions-S1: The S3 Bucket has server access logs disabled.
+        this.nagSuppressionInputs.push({
+          id: NagSuppressionRuleIds.S1,
+          details: [
+            {
+              path: `${this.stackName}/AuditManagerPublishingDestinationBucket/Resource/Resource`,
+              reason: 'Due to configuration settings, server access logs have been disabled.',
+            },
+          ],
+        });
+      }
+
+      // AwsSolutions-IAM5: The IAM entity contains wildcard permissions and does not have a cdk_nag rule suppression with evidence for those permission.
+      this.nagSuppressionInputs.push({
+        id: NagSuppressionRuleIds.IAM5,
+        details: [
           {
-            id: 'AwsSolutions-S1',
-            reason:
-              'AuditManagerPublishingDestinationBucket has server access logs disabled till the task for access logging completed.',
+            path:
+              `/${this.stackName}/AuditManagerPublishingDestinationBucket/AuditManagerPublishingDestinationBucketReplication/` +
+              pascalCase(this.centralLogsBucketName) +
+              '-ReplicationRole/DefaultPolicy/Resource',
+            reason: 'Allows only specific policy.',
           },
         ],
-      );
+      });
 
-      new cdk.aws_ssm.StringParameter(this, 'SsmParamOrganizationAuditManagerPublishingDestinationBucketArn', {
-        parameterName: '/accelerator/organization/security/auditManager/publishing-destination/bucket-arn',
+      this.ssmParameters.push({
+        logicalId: 'SsmParamOrganizationAuditManagerPublishingDestinationBucketArn',
+        parameterName: `${this.props.prefixes.ssmParamName}/organization/security/auditManager/publishing-destination/bucket-arn`,
         stringValue: bucket.getS3Bucket().bucketArn,
       });
 
@@ -392,7 +364,7 @@ export class SecurityAuditStack extends AcceleratorStack {
           resources: [bucket.getS3Bucket().bucketArn, `${bucket.getS3Bucket().bucketArn}/*`],
           conditions: {
             StringEquals: {
-              'aws:PrincipalOrgID': this.organizationId,
+              ...this.getPrincipalOrgIdCondition(this.organizationId),
             },
           },
         }),
@@ -404,37 +376,38 @@ export class SecurityAuditStack extends AcceleratorStack {
       if (this.props.securityConfig.centralSecurityServices.auditManager?.defaultReportsConfiguration.enable) {
         new AuditManagerDefaultReportsDestination(this, 'AuditManagerDefaultReportsDestination', {
           defaultReportsDestinationType: AuditManagerDefaultReportsDestinationTypes.S3,
-          kmsKey: this.key,
+          bucketKmsKey: this.s3Key,
+          kmsKey: this.cloudwatchKey,
           logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
-          bucket: 's3://'.concat(bucket.getS3Bucket().bucketName),
+          bucket: `s3://'${bucket.getS3Bucket().bucketName}/audit-manager/${cdk.Stack.of(this).account}/`,
         });
       }
     }
   }
 
   /**
-   * Function to configure DetectiveGraph
+   * Function to Configure Detective
    */
-  private configureDetectiveGraph() {
-    Logger.debug(
-      `[security-audit-stack] centralSecurityServices.detective?.enable: ${this.props.securityConfig.centralSecurityServices.detective?.enable}`,
+  private configureDetective() {
+    this.logger.debug(
+      `centralSecurityServices.detective?.enable: ${this.props.securityConfig.centralSecurityServices.detective?.enable}`,
     );
 
     if (this.props.securityConfig.centralSecurityServices.detective?.enable) {
       if (
-        this.props.securityConfig.centralSecurityServices.detective?.excludeRegions!.indexOf(
+        this.props.securityConfig.centralSecurityServices.detective?.excludeRegions.indexOf(
           cdk.Stack.of(this).region as Region,
         ) === -1
       ) {
-        Logger.info('[security-audit-stack] Adding Detective ');
+        this.logger.info('Adding Detective ');
 
         const detectiveMembers = new DetectiveMembers(this, 'DetectiveMembers', {
-          kmsKey: this.key,
+          kmsKey: this.cloudwatchKey,
           logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
         });
 
         new DetectiveGraphConfig(this, 'DetectiveGraphConfig', {
-          kmsKey: this.key,
+          kmsKey: this.cloudwatchKey,
           logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
         }).node.addDependency(detectiveMembers);
       }
@@ -445,48 +418,53 @@ export class SecurityAuditStack extends AcceleratorStack {
    * Function to configure SecurityHub
    */
   private configureSecurityHub() {
-    Logger.debug(
-      `[security-audit-stack] centralSecurityServices.securityHub.enable: ${this.props.securityConfig.centralSecurityServices.securityHub.enable}`,
-    );
-    if (
-      this.props.securityConfig.centralSecurityServices.securityHub.enable &&
-      this.props.securityConfig.centralSecurityServices.securityHub.excludeRegions!.indexOf(
-        cdk.Stack.of(this).region as Region,
-      ) === -1
-    ) {
-      Logger.info('[security-audit-stack] Adding SecurityHub ');
+    this.logger.debug(`centralSecurityServices.securityHub.enable: ${this.securityHubConfig.enable}`);
+    if (this.validateExcludeRegionsAndDeploymentTargets(this.securityHubConfig)) {
+      const securityHubMemberAccountIds: string[] = [];
+      if (this.securityHubConfig.deploymentTargets) {
+        securityHubMemberAccountIds.push(
+          ...this.getAccountIdsFromDeploymentTargets(this.securityHubConfig.deploymentTargets as DeploymentTargets),
+        );
+      }
+
+      this.logger.info(
+        securityHubMemberAccountIds.length > 0
+          ? `Enabling SecurityHub for accounts defined in SecurityHub deploymentTargets`
+          : 'Enabling SecurityHub for all existing accounts',
+      );
+
+      this.logger.info('Adding SecurityHub ');
 
       new SecurityHubMembers(this, 'SecurityHubMembers', {
-        kmsKey: this.key,
+        kmsKey: this.cloudwatchKey,
+        logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
+        securityHubMemberAccountIds,
+        autoEnableOrgMembers: this.securityHubConfig.autoEnableOrgMembers ?? true,
+      });
+    }
+
+    this.logger.debug(
+      `centralSecurityServices.securityHub.regionAggregation: ${this.securityHubConfig.regionAggregation}`,
+    );
+    if (
+      this.securityHubConfig.enable &&
+      this.securityHubConfig.regionAggregation &&
+      this.props.globalConfig.homeRegion == cdk.Stack.of(this).region
+    ) {
+      this.logger.info('Enabling region aggregation for SecurityHub in the Home Region');
+
+      new SecurityHubRegionAggregation(this, 'SecurityHubRegionAggregation', {
+        kmsKey: this.cloudwatchKey,
         logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
       });
-
-      Logger.debug(
-        `[security-audit-stack] centralSecurityServices.securityHub.regionAggregation: ${this.props.securityConfig.centralSecurityServices.securityHub.regionAggregation}`,
-      );
-      if (
-        this.props.securityConfig.centralSecurityServices.securityHub.enable &&
-        this.props.securityConfig.centralSecurityServices.securityHub.regionAggregation &&
-        this.props.globalConfig.homeRegion == cdk.Stack.of(this).region
-      ) {
-        Logger.info('[security-audit-stack] Enabling region aggregation for SecurityHub in the Home Region');
-
-        new SecurityHubRegionAggregation(this, 'SecurityHubRegionAggregation', {
-          kmsKey: this.key,
-          logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
-        });
-      }
     }
   }
 
   /**
-   * Configure SSM Automation
+   * Function to configure SSM documents
    */
-  private configureSsmAutomation() {
-    //
-    // SSM Automation Docs
-    //
-    Logger.info(`[security-audit-stack] Adding SSM Automation Docs`);
+  private configureSsmDocuments() {
+    this.logger.info(`Adding SSM Automation Docs`);
     if (
       this.props.securityConfig.centralSecurityServices.ssmAutomation.excludeRegions === undefined ||
       this.props.securityConfig.centralSecurityServices.ssmAutomation.excludeRegions.indexOf(
@@ -500,7 +478,7 @@ export class SecurityAuditStack extends AcceleratorStack {
         const accountIds: string[] = this.getAccountIdsFromShareTarget(documentSetItem.shareTargets);
 
         for (const documentItem of documentSetItem.documents ?? []) {
-          Logger.info(`[security-audit-stack] Adding ${documentItem.name}`);
+          this.logger.info(`Adding ${documentItem.name}`);
 
           // Read in the document which should be properly formatted
           const buffer = fs.readFileSync(path.join(this.props.configDirPath, documentItem.template), 'utf8');
@@ -518,8 +496,9 @@ export class SecurityAuditStack extends AcceleratorStack {
             content,
             documentType: 'Automation',
             sharedWithAccountIds: accountIds,
-            kmsKey: this.key,
+            kmsKey: this.cloudwatchKey,
             logRetentionInDays: this.props.globalConfig.cloudwatchLogRetentionInDays,
+            targetType: documentItem.targetType,
           });
         }
       }
@@ -527,15 +506,15 @@ export class SecurityAuditStack extends AcceleratorStack {
   }
 
   /**
-   * Function to configure Access Analyzer
+   * Function to configure IAM Analyzer
    */
-  private configureAccessAnalyzer() {
-    Logger.debug(`[security-audit-stack] accessAnalyzer.enable: ${this.props.securityConfig.accessAnalyzer.enable}`);
+  private configureIamAnalyzer() {
+    this.logger.debug(`accessAnalyzer.enable: ${this.props.securityConfig.accessAnalyzer.enable}`);
     if (
       this.props.securityConfig.accessAnalyzer.enable &&
       this.props.globalConfig.homeRegion === cdk.Stack.of(this).region
     ) {
-      Logger.info('[security-audit-stack] Adding IAM Access Analyzer ');
+      this.logger.info('Adding IAM Access Analyzer ');
       new cdk.aws_accessanalyzer.CfnAnalyzer(this, 'AccessAnalyzer', {
         type: 'ORGANIZATION',
       });
@@ -543,18 +522,50 @@ export class SecurityAuditStack extends AcceleratorStack {
   }
 
   /**
-   * Function to configure SNS subscriptions
+   * Function to configure SNS Notifications
    */
-  private configureSnsSubscriptions() {
-    Logger.info(`[security-audit-stack] Create SNS Topics and Subscriptions`);
+  private configureSnsNotifications() {
+    this.logger.info(`Create SNS Topics and Subscriptions`);
+
+    //
+    // Create KMS Key for SNS topic when there are SNS topics are to be created
+    let snsKey: cdk.aws_kms.IKey | undefined;
+    if (this.props.securityConfig.centralSecurityServices.snsSubscriptions ?? [].length > 0) {
+      snsKey = new cdk.aws_kms.Key(this, 'AcceleratorSnsKey', {
+        alias: this.acceleratorResourceNames.customerManagedKeys.sns.alias,
+        description: this.acceleratorResourceNames.customerManagedKeys.sns.description,
+        enableKeyRotation: true,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+      });
+      if (this.props.organizationConfig.enable) {
+        snsKey.addToResourcePolicy(
+          new cdk.aws_iam.PolicyStatement({
+            sid: `Allow Accelerator Role to use the encryption key`,
+            principals: [new cdk.aws_iam.AnyPrincipal()],
+            actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+            resources: ['*'],
+            conditions: {
+              StringEquals: {
+                ...this.getPrincipalOrgIdCondition(this.organizationId),
+              },
+              ArnLike: {
+                'aws:PrincipalARN': [
+                  `arn:${cdk.Stack.of(this).partition}:iam::*:role/${this.props.prefixes.accelerator}-*`,
+                ],
+              },
+            },
+          }),
+        );
+      }
+    }
 
     // Loop through all the subscription entries
     for (const snsSubscriptionItem of this.props.securityConfig.centralSecurityServices.snsSubscriptions ?? []) {
-      Logger.info(`[security-audit-stack] Create SNS Topic: ${snsSubscriptionItem.level}`);
+      this.logger.info(`Create SNS Topic: ${snsSubscriptionItem.level}`);
       const topic = new cdk.aws_sns.Topic(this, `${pascalCase(snsSubscriptionItem.level)}SnsTopic`, {
         displayName: `AWS Accelerator - ${snsSubscriptionItem.level} Notifications`,
-        topicName: `aws-accelerator-${snsSubscriptionItem.level}Notifications`,
-        masterKey: this.key,
+        topicName: `${this.props.prefixes.snsTopicName}-${snsSubscriptionItem.level}Notifications`,
+        masterKey: snsKey,
       });
 
       // Allowing Publish from CloudWatch Service from any account
@@ -569,7 +580,7 @@ export class SecurityAuditStack extends AcceleratorStack {
 
       // Allowing Publish from Organization
       topic.grantPublish({
-        grantPrincipal: new cdk.aws_iam.OrganizationPrincipal(this.organizationId),
+        grantPrincipal: this.getOrgPrincipals(this.organizationId),
       });
 
       topic.addToResourcePolicy(
@@ -580,28 +591,30 @@ export class SecurityAuditStack extends AcceleratorStack {
           resources: [topic.topicArn],
           conditions: {
             StringEquals: {
-              'aws:PrincipalOrgID': this.organizationId,
+              ...this.getPrincipalOrgIdCondition(this.organizationId),
             },
           },
         }),
       );
 
-      Logger.info(`[security-audit-stack] Create SNS Subscription: ${snsSubscriptionItem.email}`);
+      this.logger.info(`Create SNS Subscription: ${snsSubscriptionItem.email}`);
       topic.addSubscription(new cdk.aws_sns_subscriptions.EmailSubscription(snsSubscriptionItem.email));
     }
   }
 
   /**
-   * Function to configure Control Tower notification forwarding
+   * Function to configure CT notification
    */
-  private configureControlTowerNotificationForwarding() {
+  private configureControlTowerNotification() {
     if (
       this.props.globalConfig.controlTower.enable &&
       cdk.Stack.of(this).region == this.props.globalConfig.homeRegion
     ) {
       const mgmtAccountSnsTopicArn = `arn:${cdk.Stack.of(this).partition}:sns:${
         cdk.Stack.of(this).region
-      }:${this.props.accountsConfig.getManagementAccountId()}:AWSAccelerator-ControlTowerNotification`;
+      }:${this.props.accountsConfig.getManagementAccountId()}:${
+        this.props.prefixes.snsTopicName
+      }-ControlTowerNotification`;
       const controlTowerNotificationsForwarderFunction = new cdk.aws_lambda.Function(
         this,
         'ControlTowerNotificationsForwarderFunction',
@@ -609,7 +622,7 @@ export class SecurityAuditStack extends AcceleratorStack {
           code: cdk.aws_lambda.Code.fromAsset(
             path.join(__dirname, '../lambdas/control-tower-notifications-forwarder/dist'),
           ),
-          runtime: cdk.aws_lambda.Runtime.NODEJS_14_X,
+          runtime: DEFAULT_LAMBDA_RUNTIME,
           handler: 'index.handler',
           description: 'Lambda function to forward ControlTower notifications to management account',
           timeout: cdk.Duration.minutes(2),
@@ -652,27 +665,25 @@ export class SecurityAuditStack extends AcceleratorStack {
     }
 
     // AwsSolutions-IAM4: The IAM user, role, or group uses AWS managed policies
-    NagSuppressions.addResourceSuppressionsByPath(
-      this,
-      `${this.stackName}/ControlTowerNotificationsForwarderFunction/ServiceRole/Resource`,
-      [
+    this.nagSuppressionInputs.push({
+      id: NagSuppressionRuleIds.IAM4,
+      details: [
         {
-          id: 'AwsSolutions-IAM4',
+          path: `${this.stackName}/ControlTowerNotificationsForwarderFunction/ServiceRole/Resource`,
           reason: 'AWS Custom resource provider lambda role created by cdk.',
         },
       ],
-    );
+    });
 
     // AwsSolutions-IAM5: TThe IAM entity contains wildcard permissions
-    NagSuppressions.addResourceSuppressionsByPath(
-      this,
-      `${this.stackName}/ControlTowerNotificationsForwarderFunction/ServiceRole/DefaultPolicy/Resource`,
-      [
+    this.nagSuppressionInputs.push({
+      id: NagSuppressionRuleIds.IAM5,
+      details: [
         {
-          id: 'AwsSolutions-IAM5',
+          path: `${this.stackName}/ControlTowerNotificationsForwarderFunction/ServiceRole/DefaultPolicy/Resource`,
           reason: 'Require access to all keys in management account',
         },
       ],
-    );
+    });
   }
 }

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,14 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { getGlobalRegion, setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import {
+  DisableAWSServiceAccessCommand,
+  EnableAWSServiceAccessCommand,
+  OrganizationsClient,
+} from '@aws-sdk/client-organizations';
 
 /**
  * enable-aws-service-access - lambda handler
@@ -21,28 +26,28 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
     }
   | undefined
 > {
-  const servicePrincipal: string = event.ResourceProperties['servicePrincipal'];
   const partition = event.ResourceProperties['partition'];
-
-  let organizationsClient: AWS.Organizations;
-  if (partition === 'aws-us-gov') {
-    organizationsClient = new AWS.Organizations({ region: 'us-gov-west-1' });
-  } else {
-    organizationsClient = new AWS.Organizations({ region: 'us-east-1' });
-  }
+  const servicePrincipal: string = event.ResourceProperties['servicePrincipal'];
+  const solutionId = process.env['SOLUTION_ID'];
+  const globalRegion = getGlobalRegion(partition);
+  const organizationsClient = new OrganizationsClient({
+    region: globalRegion,
+    customUserAgent: solutionId,
+    retryStrategy: setRetryStrategy(),
+  });
 
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
       await throttlingBackOff(() =>
-        organizationsClient.enableAWSServiceAccess({ ServicePrincipal: servicePrincipal }).promise(),
+        organizationsClient.send(new EnableAWSServiceAccessCommand({ ServicePrincipal: servicePrincipal })),
       );
 
       return {
@@ -52,7 +57,7 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 
     case 'Delete':
       await throttlingBackOff(() =>
-        organizationsClient.disableAWSServiceAccess({ ServicePrincipal: servicePrincipal }).promise(),
+        organizationsClient.send(new DisableAWSServiceAccessCommand({ ServicePrincipal: servicePrincipal })),
       );
       return {
         PhysicalResourceId: event.PhysicalResourceId,

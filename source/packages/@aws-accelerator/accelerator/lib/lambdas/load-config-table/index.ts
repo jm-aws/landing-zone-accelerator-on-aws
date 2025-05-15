@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -15,29 +15,36 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, UpdateCommandInput } from '@aws-sdk/lib-dynamodb';
 import { CloudFormationClient, DescribeStacksCommand } from '@aws-sdk/client-cloudformation';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
 import * as yaml from 'js-yaml';
 import {
   AccountConfig,
   AccountsConfig,
-  AccountsConfigTypes,
   OrganizationalUnitConfig,
   OrganizationConfig,
-  OrganizationConfigTypes,
+  parseAccountsConfig,
+  parseReplacementsConfig,
+  ReplacementsConfig,
 } from '@aws-accelerator/config';
-import * as t from '@aws-accelerator/config/';
 import { Readable } from 'stream';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 
 export {};
-declare global {
-  type File = unknown;
-  type ReadableStream = unknown;
-}
+const marshallOptions = {
+  convertEmptyValues: false,
+  //overriding default value of false
+  removeUndefinedValues: true,
+  convertClassInstanceToMap: false,
+};
+const unmarshallOptions = {
+  wrapNumbers: false,
+};
+const translateConfig = { marshallOptions, unmarshallOptions };
 
-const dynamodbClient = new DynamoDBClient({});
-const documentClient = DynamoDBDocumentClient.from(dynamodbClient);
-const cloudformationClient = new CloudFormationClient({});
-const s3Client = new S3Client({});
+let dynamodbClient: DynamoDBClient;
+let documentClient: DynamoDBDocumentClient;
+let cloudformationClient: CloudFormationClient;
+let s3Client: S3Client;
 
 /**
  * load-config-table - lambda handler
@@ -45,7 +52,7 @@ const s3Client = new S3Client({});
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -61,12 +68,20 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   const configS3Bucket: string = event.ResourceProperties['configS3Bucket'];
   const organizationsConfigS3Key: string = event.ResourceProperties['organizationsConfigS3Key'];
   const accountConfigS3Key: string = event.ResourceProperties['accountConfigS3Key'];
+  const replacementsConfigS3Key: string = event.ResourceProperties['replacementsConfigS3Key'];
   const commitId: string = event.ResourceProperties['commitId'] ?? '';
   const partition: string = event.ResourceProperties['partition'];
   const stackName: string = event.ResourceProperties['stackName'];
+  const solutionId = process.env['SOLUTION_ID'];
+  const isOrgsEnabled: boolean = event.ResourceProperties['isOrgsEnabled'] === 'true';
 
   console.log(`Configuration Table Name: ${configTableName}`);
   console.log(`Configuration Repository Name: ${configRepositoryName}`);
+
+  dynamodbClient = new DynamoDBClient({ customUserAgent: solutionId });
+  documentClient = DynamoDBDocumentClient.from(dynamodbClient, translateConfig);
+  cloudformationClient = new CloudFormationClient({ customUserAgent: solutionId });
+  s3Client = new S3Client({ customUserAgent: solutionId });
 
   switch (event.RequestType) {
     case 'Create':
@@ -89,12 +104,13 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         partition,
         configTableName,
         commitId,
-        { name: configS3Bucket, organizationsConfigS3Key, accountConfigS3Key },
+        { name: configS3Bucket, organizationsConfigS3Key, accountConfigS3Key, replacementsConfigS3Key },
         {
           managementAccount: managementAccountEmail,
           auditAccount: auditAccountEmail,
           logArchiveAccount: logArchiveAccountEmail,
         },
+        isOrgsEnabled,
       );
 
     case 'Delete':
@@ -237,25 +253,24 @@ async function onCreateUpdateFunction(
   partition: string,
   configTableName: string,
   commitId: string,
-  bucket: { name: string; organizationsConfigS3Key: string; accountConfigS3Key: string },
+  bucket: {
+    name: string;
+    organizationsConfigS3Key: string;
+    accountConfigS3Key: string;
+    replacementsConfigS3Key: string;
+  },
   emails: {
     managementAccount: string;
     auditAccount: string;
     logArchiveAccount: string;
   },
+  isOrgsEnabled: boolean,
 ): Promise<{
   PhysicalResourceId: string | undefined;
   Status: string;
 }> {
-  const organizationConfigContent = await getConfigFileContents(bucket.name, bucket.organizationsConfigS3Key);
-  const organizationValues = t.parse(OrganizationConfigTypes.organizationConfig, yaml.load(organizationConfigContent));
-  const organizationConfig = new OrganizationConfig(organizationValues);
-  await organizationConfig.loadOrganizationalUnitIds(partition);
-
-  await putAllOrganizationConfigInTable(organizationConfig, configTableName, commitId);
-
   const accountsConfigContent = await getConfigFileContents(bucket.name, bucket.accountConfigS3Key);
-  const accountsValues = t.parse(AccountsConfigTypes.accountsConfig, yaml.load(accountsConfigContent));
+  const accountsValues = parseAccountsConfig(yaml.load(accountsConfigContent));
   const accountsConfig = new AccountsConfig(
     {
       managementAccountEmail: emails.managementAccount,
@@ -264,7 +279,32 @@ async function onCreateUpdateFunction(
     },
     accountsValues,
   );
-  await accountsConfig.loadAccountIds(partition);
+
+  let replacementsConfig = undefined;
+  if (bucket.replacementsConfigS3Key) {
+    const replacementsConfigContent = await getConfigFileContents(bucket.name, bucket.replacementsConfigS3Key);
+    const replacementsValues = parseReplacementsConfig(yaml.load(replacementsConfigContent));
+
+    // edge-case: loading without looking up SSM replacements
+    replacementsConfig = new ReplacementsConfig(replacementsValues, accountsConfig, true);
+    const orgConfigContent = await getConfigFileContents(bucket.name, bucket.organizationsConfigS3Key);
+    const isOrgsEnabled = OrganizationConfig.loadFromString(orgConfigContent, replacementsConfig).enable;
+    replacementsConfig.loadReplacementValues({}, isOrgsEnabled);
+  }
+
+  const organizationConfigContent = await getConfigFileContents(bucket.name, bucket.organizationsConfigS3Key);
+  const organizationConfig = OrganizationConfig.loadFromString(organizationConfigContent, replacementsConfig);
+  await organizationConfig.loadOrganizationalUnitIds(partition);
+
+  await putAllOrganizationConfigInTable(organizationConfig, configTableName, commitId);
+
+  // Boolean to set single account deployment mode
+  const enableSingleAccountMode = process.env['ACCELERATOR_ENABLE_SINGLE_ACCOUNT_MODE']
+    ? process.env['ACCELERATOR_ENABLE_SINGLE_ACCOUNT_MODE'] === 'true'
+    : false;
+
+  await accountsConfig.loadAccountIds(partition, enableSingleAccountMode, isOrgsEnabled, accountsConfig);
+
   for (const account of accountsConfig.mandatoryAccounts) {
     switch (account.name) {
       case 'Management':
@@ -341,7 +381,7 @@ async function putAllOrganizationConfigInTable(
       if (error instanceof Error) message = error.message;
       else message = String(error);
 
-      if (message.startsWith('Organizations not enabled or')) awsKey = '';
+      if (message.startsWith('configuration validation failed')) awsKey = '';
       else throw error;
     }
     await putOrganizationConfigInTable(organizationalUnit, configTableName, awsKey, commitId);

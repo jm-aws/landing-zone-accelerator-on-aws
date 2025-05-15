@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,17 +12,25 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-
-import { SynthUtils } from '@aws-cdk/assert';
-
-import { Vpc } from '../../lib/aws-ec2/vpc';
+import {
+  Vpc,
+  Subnet,
+  NatGateway,
+  SecurityGroup,
+  NetworkAcl,
+  DeleteDefaultSecurityGroupRules,
+} from '../../lib/aws-ec2/vpc';
+import { RouteTable } from '../../lib/aws-ec2/route-table';
+import { snapShotTest } from '../snapshot-test';
+import { OutpostsConfig } from '@aws-accelerator/config';
+import { describe } from '@jest/globals';
 
 const testNamePrefix = 'Construct(Vpc): ';
 
 //Initialize stack for snapshot test and resource configuration test
 const stack = new cdk.Stack();
 
-new Vpc(stack, 'TestVpc', {
+const vpc = new Vpc(stack, 'TestVpc', {
   name: 'Main',
   ipv4CidrBlock: '10.0.0.0/16',
   dhcpOptions: 'Test-Options',
@@ -31,126 +39,186 @@ new Vpc(stack, 'TestVpc', {
   enableDnsSupport: true,
   instanceTenancy: 'default',
   tags: [{ key: 'Test-Key', value: 'Test-Value' }],
+  virtualPrivateGateway: {
+    asn: 65000,
+  },
+});
+
+vpc.addFlowLogs({
+  destinations: ['s3', 'cloud-watch-logs'],
+  maxAggregationInterval: 60,
+  trafficType: 'ALL',
+  bucketArn: 'arn:aws:s3:::aws-accelerator-test-111111111111-us-east-1',
+  encryptionKey: new cdk.aws_kms.Key(stack, 'test-key2'),
+  logRetentionInDays: 10,
+  useExistingRoles: false,
+  acceleratorPrefix: 'AWSAccelerator',
+});
+
+const vpcExistingIam = new Vpc(stack, 'TestVpcExistingIam', {
+  name: 'Main',
+  ipv4CidrBlock: '10.0.0.0/16',
+  dhcpOptions: 'Test-Options',
+  internetGateway: true,
+  enableDnsHostnames: false,
+  enableDnsSupport: true,
+  instanceTenancy: 'default',
+  tags: [{ key: 'Test-Key', value: 'Test-Value' }],
+  virtualPrivateGateway: {
+    asn: 65000,
+  },
+});
+
+vpcExistingIam.addFlowLogs({
+  destinations: ['s3', 'cloud-watch-logs'],
+  maxAggregationInterval: 60,
+  trafficType: 'ALL',
+  bucketArn: 'arn:aws:s3:::aws-accelerator-test-111111111111-us-east-1',
+  encryptionKey: new cdk.aws_kms.Key(stack, 'testKey2ExistingIam'),
+  logRetentionInDays: 10,
+  useExistingRoles: true,
+  acceleratorPrefix: 'AWSAccelerator',
+});
+
+vpc.addIpv4Cidr({ cidrBlock: '10.2.0.0/16' });
+vpc.addIpv6Cidr({ amazonProvidedIpv6CidrBlock: true });
+vpc.addIpv6Cidr({ ipv6CidrBlock: '::1', ipv6Pool: 'ipv6Pool-ec2-1234' });
+
+const outpostConfig = new OutpostsConfig();
+const rt = new RouteTable(stack, 'test-rt', { name: 'test-rt', vpc });
+const subnet1 = new Subnet(stack, 'test', {
+  availabilityZone: 'a',
+  vpc,
+  name: 'testSubnetOutpost',
+  routeTable: rt,
+  outpost: outpostConfig,
+  ipv4CidrBlock: '10.0.1.0/24',
+  availabilityZoneId: undefined,
+});
+
+new Subnet(stack, 'testSubnetIpam', {
+  availabilityZone: 'b',
+  availabilityZoneId: undefined,
+  vpc,
+  name: 'testSubnet',
+  routeTable: rt,
+  ipamAllocation: {
+    ipamPoolName: 'test',
+    netmaskLength: 24,
+  },
+  basePool: ['myBasePool'],
+  logRetentionInDays: 10,
+  kmsKey: new cdk.aws_kms.Key(stack, 'testKms'),
+});
+
+new Subnet(stack, 'testSubnetIpamPhysicalAz1', {
+  availabilityZone: undefined,
+  availabilityZoneId: '1',
+  vpc,
+  name: 'testSubnetPhysicalAz1',
+  routeTable: rt,
+  ipamAllocation: {
+    ipamPoolName: 'test',
+    netmaskLength: 24,
+  },
+  basePool: ['myBasePool'],
+  logRetentionInDays: 10,
+  kmsKey: new cdk.aws_kms.Key(stack, 'testKms1'),
+});
+
+new Subnet(stack, 'testSubnetPhysicalAz2', {
+  availabilityZone: undefined,
+  availabilityZoneId: '2',
+  vpc,
+  name: 'testSubnetPhysicalAz2',
+  routeTable: rt,
+  ipamAllocation: {
+    ipamPoolName: 'test',
+    netmaskLength: 24,
+  },
+  basePool: ['myBasePool'],
+  logRetentionInDays: 10,
+  kmsKey: new cdk.aws_kms.Key(stack, 'testKms2'),
+});
+
+new Subnet(stack, 'Ipv6OnlySubnet', {
+  availabilityZoneId: '1',
+  vpc,
+  name: 'test-ipv6-only-subnet',
+  routeTable: rt,
+  enableDns64: true,
+  ipv6CidrBlock: 'fd00::/58',
+  privateDnsOptions: {
+    enableDnsAAAARecord: true,
+    enableDnsARecord: false,
+    hostnameType: 'resource-name',
+  },
+});
+
+new Subnet(stack, 'DualStackSubnet', {
+  availabilityZoneId: '1',
+  vpc,
+  name: 'test-dualstack-subnet',
+  routeTable: rt,
+  enableDns64: true,
+  ipv4CidrBlock: '10.0.0.0/24',
+  ipv6CidrBlock: 'fd00::/58',
+  privateDnsOptions: {
+    enableDnsAAAARecord: true,
+    enableDnsARecord: true,
+  },
+});
+
+new NatGateway(stack, 'natGw', { name: 'ngw', subnet: subnet1, tags: [{ key: 'test', value: 'test2' }] });
+
+const sg = new SecurityGroup(stack, 'tetSg', {
+  description: 'test',
+  securityGroupName: 'test',
+  vpc,
+  tags: [{ key: 'test', value: 'test2' }],
+});
+
+sg.addEgressRule('egressTest', {
+  ipProtocol: 'ipv4',
+  cidrIp: '10.0.0.7/32',
+  description: 'test description',
+  fromPort: 80,
+  toPort: 80,
+});
+
+sg.addIngressRule('ingressTest', {
+  ipProtocol: 'ipv4',
+  cidrIp: '10.0.0.7/32',
+  description: 'test description',
+  fromPort: 80,
+  toPort: 80,
+});
+
+const nacl = new NetworkAcl(stack, 'naclTest', {
+  networkAclName: 'naclTest',
+  vpc,
+  tags: [{ key: 'test', value: 'test2' }],
+});
+
+nacl.addEntry('naclEntry', {
+  egress: true,
+  protocol: 443,
+  ruleAction: 'deny',
+  ruleNumber: 2,
+  cidrBlock: '10.0.0.14/32',
+});
+
+nacl.associateSubnet('naclSubnetAssociation', { subnet: subnet1 });
+
+new DeleteDefaultSecurityGroupRules(stack, 'TestDeleteDefaultSgRules', {
+  vpcId: 'someVpcId', //intentionally did not use regex of VPC to prevent scan
+  kmsKey: new cdk.aws_kms.Key(stack, 'testKmsTestDeleteDefaultSgRules'),
+  logRetentionInDays: 7,
 });
 
 /**
  * Vpc construct test
  */
 describe('Vpc', () => {
-  /**
-   * Snapshot test
-   */
-  test(`${testNamePrefix} Snapshot Test`, () => {
-    expect(SynthUtils.toCloudFormation(stack)).toMatchSnapshot();
-  });
-
-  /**
-   * Number of VPC test
-   */
-  test(`${testNamePrefix} VPC count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::EC2::VPC', 1);
-  });
-
-  /**
-   * Number of InternetGateway test
-   */
-  test(`${testNamePrefix} InternetGateway count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::EC2::InternetGateway', 1);
-  });
-
-  /**
-   * Number of DHCP options test
-   */
-  test(`${testNamePrefix} DHCP options association count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::EC2::VPCDHCPOptionsAssociation', 1);
-  });
-
-  /**
-   * Number of VPCGatewayAttachment test
-   */
-  test(`${testNamePrefix} VPCGatewayAttachment count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::EC2::VPCGatewayAttachment', 1);
-  });
-
-  /**
-   * VPC resource configuration test
-   */
-  test(`${testNamePrefix} VPC resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestVpcE77CE678: {
-          Type: 'AWS::EC2::VPC',
-          Properties: {
-            CidrBlock: '10.0.0.0/16',
-            EnableDnsHostnames: false,
-            EnableDnsSupport: true,
-            InstanceTenancy: 'default',
-            Tags: [
-              {
-                Key: 'Name',
-                Value: 'Main',
-              },
-              {
-                Key: 'Test-Key',
-                Value: 'Test-Value',
-              },
-            ],
-          },
-        },
-      },
-    });
-  });
-
-  /**
-   * InternetGateway resource configuration test
-   */
-  test(`${testNamePrefix} InternetGateway resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestVpcInternetGateway01360C82: {
-          Type: 'AWS::EC2::InternetGateway',
-        },
-      },
-    });
-  });
-
-  /**
-   * DHCP options association resource configuration test
-   */
-  test(`${testNamePrefix} DHCP options association resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestVpcDhcpOptionsAssociationDB23B751: {
-          Type: 'AWS::EC2::VPCDHCPOptionsAssociation',
-          Properties: {
-            DhcpOptionsId: 'Test-Options',
-            VpcId: {
-              Ref: 'TestVpcE77CE678',
-            },
-          },
-        },
-      },
-    });
-  });
-
-  /**
-   * VPCGatewayAttachment resource configuration test
-   */
-  test(`${testNamePrefix} VPCGatewayAttachment resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestVpcInternetGatewayAttachment60E451D5: {
-          Type: 'AWS::EC2::VPCGatewayAttachment',
-          Properties: {
-            InternetGatewayId: {
-              Ref: 'TestVpcInternetGateway01360C82',
-            },
-            VpcId: {
-              Ref: 'TestVpcE77CE678',
-            },
-          },
-        },
-      },
-    });
-  });
+  snapShotTest(testNamePrefix, stack);
 });

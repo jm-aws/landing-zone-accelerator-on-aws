@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -38,6 +38,16 @@ export interface TransitGatewayRouteTableProps {
  */
 export class TransitGatewayRouteTable extends Construct {
   public readonly id: string;
+
+  static fromRouteTableId(scope: Construct, id: string, routeTableId: string) {
+    class Import extends Construct {
+      public readonly id = routeTableId;
+      constructor(scope: Construct, id: string) {
+        super(scope, id);
+      }
+    }
+    return new Import(scope, id);
+  }
 
   constructor(scope: Construct, id: string, props: TransitGatewayRouteTableProps) {
     super(scope, id);

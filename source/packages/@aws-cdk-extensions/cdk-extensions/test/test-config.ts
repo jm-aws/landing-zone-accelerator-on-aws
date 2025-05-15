@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -26,4 +26,10 @@ export const repositoryProps: CdkExtensions.RepositoryProps = {
   repositoryBranchName: 'main',
   s3BucketName: 'Testbucket',
   s3key: 'testkey',
+};
+
+export const trailProps: CdkExtensions.TrailProps = {
+  isOrganizationTrail: true,
+  apiCallRateInsight: true,
+  apiErrorRateInsight: true,
 };

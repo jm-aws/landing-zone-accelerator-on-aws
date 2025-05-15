@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,9 +12,10 @@
  */
 
 import * as AWS from 'aws-sdk';
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 
-const organizationsClient = new AWS.Organizations();
+let organizationsClient: AWS.Organizations;
 
 /**
  * detach-quarantine-scp - lambda handler
@@ -23,7 +24,7 @@ const organizationsClient = new AWS.Organizations();
  * @returns
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -32,7 +33,9 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 > {
   console.log(event);
   const policyId: string = event.ResourceProperties['scpPolicyId'] ?? '';
+  const solutionId = process.env['SOLUTION_ID'];
 
+  organizationsClient = new AWS.Organizations({ customUserAgent: solutionId });
   switch (event.RequestType) {
     case 'Create':
     case 'Update':

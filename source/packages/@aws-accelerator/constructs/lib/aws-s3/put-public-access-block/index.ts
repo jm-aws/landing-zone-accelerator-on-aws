@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,10 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import { PutPublicAccessBlockCommand, S3ControlClient } from '@aws-sdk/client-s3-control';
+import { setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
 
 /**
  * put-public-access-block - lambda handler
@@ -21,7 +22,7 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -33,15 +34,19 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   const blockPublicPolicy: boolean = event.ResourceProperties['blockPublicPolicy'] === 'true';
   const ignorePublicAcls: boolean = event.ResourceProperties['ignorePublicAcls'] === 'true';
   const restrictPublicBuckets: boolean = event.ResourceProperties['restrictPublicBuckets'] === 'true';
+  const solutionId = process.env['SOLUTION_ID'];
 
-  const s3ControlClient = new AWS.S3Control({});
+  const s3ControlClient = new S3ControlClient({
+    customUserAgent: solutionId,
+    retryStrategy: setRetryStrategy(),
+  });
 
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
       await throttlingBackOff(() =>
-        s3ControlClient
-          .putPublicAccessBlock({
+        s3ControlClient.send(
+          new PutPublicAccessBlockCommand({
             AccountId: accountId,
             PublicAccessBlockConfiguration: {
               BlockPublicAcls: blockPublicAcls,
@@ -49,8 +54,8 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
               IgnorePublicAcls: ignorePublicAcls,
               RestrictPublicBuckets: restrictPublicBuckets,
             },
-          })
-          .promise(),
+          }),
+        ),
       );
       return {
         PhysicalResourceId: `s3-bpa-${accountId}`,

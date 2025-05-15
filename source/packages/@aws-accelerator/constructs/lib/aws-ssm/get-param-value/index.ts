@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,10 +11,11 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-import * as console from 'console';
-AWS.config.logger = console;
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { STSClient } from '@aws-sdk/client-sts';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { setRetryStrategy, getStsCredentials } from '@aws-accelerator/utils/lib/common-functions';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 
 /**
  * get ssm parameter custom control
@@ -22,50 +23,45 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
     }
   | undefined
 > {
-  const region = event.ResourceProperties['region'];
+  const parameterRegion = event.ResourceProperties['parameterRegion'];
   const invokingAccountID = event.ResourceProperties['invokingAccountID'];
   const parameterAccountID = event.ResourceProperties['parameterAccountID'];
   const assumeRoleArn = event.ResourceProperties['assumeRoleArn'];
   const parameterName = event.ResourceProperties['parameterName'];
+  const solutionId = process.env['SOLUTION_ID'];
 
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
-      let ssmClient: AWS.SSM;
+      let ssmClient: SSMClient;
       if (invokingAccountID !== parameterAccountID) {
-        const stsClient = new AWS.STS({ region: region });
-        const assumeRoleCredential = await throttlingBackOff(() =>
-          stsClient
-            .assumeRole({
-              RoleArn: assumeRoleArn,
-              RoleSessionName: 'acceleratorAssumeRoleSession',
-            })
-            .promise(),
-        );
-        console.log(assumeRoleCredential);
-        ssmClient = new AWS.SSM({
-          region: region,
-          credentials: {
-            accessKeyId: assumeRoleCredential.Credentials!.AccessKeyId,
-            secretAccessKey: assumeRoleCredential.Credentials!.SecretAccessKey,
-            sessionToken: assumeRoleCredential.Credentials!.SessionToken,
-            expireTime: assumeRoleCredential.Credentials!.Expiration,
-          },
+        const stsClient = new STSClient({
+          region: parameterRegion,
+          customUserAgent: solutionId,
+          retryStrategy: setRetryStrategy(),
+        });
+        ssmClient = new SSMClient({
+          region: parameterRegion,
+          credentials: await getStsCredentials(stsClient, assumeRoleArn),
+          customUserAgent: solutionId,
+          retryStrategy: setRetryStrategy(),
         });
       } else {
-        ssmClient = new AWS.SSM({ region: region });
+        ssmClient = new SSMClient({
+          region: parameterRegion,
+          customUserAgent: solutionId,
+          retryStrategy: setRetryStrategy(),
+        });
       }
 
-      const response = await throttlingBackOff(() => ssmClient.getParameter({ Name: parameterName }).promise());
-
-      console.log(response.Parameter!.Value);
+      const response = await throttlingBackOff(() => ssmClient.send(new GetParameterCommand({ Name: parameterName })));
 
       return { PhysicalResourceId: response.Parameter!.Value, Status: 'SUCCESS' };
 

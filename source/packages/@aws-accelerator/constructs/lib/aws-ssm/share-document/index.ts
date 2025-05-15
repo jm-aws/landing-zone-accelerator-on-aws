@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,10 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import { SSMClient, DescribeDocumentPermissionCommand, ModifyDocumentPermissionCommand } from '@aws-sdk/client-ssm';
 
 /**
  * share-document - lambda handler
@@ -21,7 +22,7 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -30,13 +31,26 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 > {
   const name = event.ResourceProperties['name'];
   const accountIds: string[] = event.ResourceProperties['accountIds'];
-  const ssmClient = new AWS.SSM({});
+  const solutionId = process.env['SOLUTION_ID'];
 
-  const documentPermission = await throttlingBackOff(() =>
-    ssmClient.describeDocumentPermission({ Name: name, PermissionType: 'Share' }).promise(),
-  );
+  const ssmClient = new SSMClient({ customUserAgent: solutionId, retryStrategy: setRetryStrategy() });
+
   console.log('DescribeDocumentPermissionCommand:');
-  console.log(JSON.stringify(documentPermission));
+  const documentPermission: string[] = [];
+  let nextToken: string | undefined = undefined;
+  // there is no paginator for DescribeDocumentPermissionCommand, so we need to loop through all pages.
+  do {
+    const page = await throttlingBackOff(() =>
+      ssmClient.send(new DescribeDocumentPermissionCommand({ Name: name, PermissionType: 'Share' })),
+    );
+
+    for (const accountId of page.AccountIds ?? []) {
+      documentPermission.push(accountId);
+    }
+    nextToken = page.NextToken;
+  } while (nextToken);
+
+  console.log(documentPermission);
 
   switch (event.RequestType) {
     case 'Create':
@@ -46,13 +60,13 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 
       // Identify accounts to add
       accountIds.forEach(accountId => {
-        if (!documentPermission.AccountIds?.includes(accountId)) {
+        if (!documentPermission.includes(accountId)) {
           accountIdsToAdd.push(accountId);
         }
       });
 
       // Identify accounts to remove
-      documentPermission.AccountIds?.forEach(accountId => {
+      documentPermission.forEach(accountId => {
         if (!accountIds.includes(accountId)) {
           accountIdsToRemove.push(accountId);
         }
@@ -61,18 +75,33 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
       console.log(`accountIdsToAdd: ${accountIdsToAdd}`);
       console.log(`accountIdsToRemove: ${accountIdsToRemove}`);
 
-      const response = await throttlingBackOff(() =>
-        ssmClient
-          .modifyDocumentPermission({
-            Name: name,
-            PermissionType: 'Share',
-            AccountIdsToAdd: accountIdsToAdd,
-            AccountIdsToRemove: accountIdsToRemove,
-          })
-          .promise(),
-      );
-      console.log('ModifyDocumentPermissionCommand:');
-      console.log(JSON.stringify(response));
+      // api call can only process 20 accounts
+      // in the AccountIdsToAdd and AccountIdsToRemove
+      // on each call
+
+      let maxItems = accountIdsToAdd.length;
+      if (accountIdsToRemove.length > maxItems) {
+        maxItems = accountIdsToRemove.length;
+      }
+      let counter = 0;
+      while (counter <= maxItems) {
+        const itemsToAdd = accountIdsToAdd.slice(counter, counter + 20);
+        const itemsToRemove = accountIdsToRemove.slice(counter, counter + 20);
+
+        console.log('ModifyDocumentPermissionCommand:');
+        const response = await throttlingBackOff(() =>
+          ssmClient.send(
+            new ModifyDocumentPermissionCommand({
+              Name: name,
+              PermissionType: 'Share',
+              AccountIdsToAdd: itemsToAdd,
+              AccountIdsToRemove: itemsToRemove,
+            }),
+          ),
+        );
+        console.log(JSON.stringify(response));
+        counter = counter + 20;
+      }
 
       return {
         PhysicalResourceId: 'share-document',
@@ -82,17 +111,24 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
     case 'Delete':
       console.log('Start un-sharing the document');
       console.log('Following accounts to be un-share');
-      console.log(documentPermission.AccountIds);
-      // Remove sharing
-      await throttlingBackOff(() =>
-        ssmClient
-          .modifyDocumentPermission({
-            Name: name,
-            PermissionType: 'Share',
-            AccountIdsToRemove: documentPermission.AccountIds,
-          })
-          .promise(),
-      );
+      console.log(documentPermission);
+
+      let deleteCounter = 0;
+      while (deleteCounter <= documentPermission.length) {
+        const itemsToDelete = documentPermission.slice(deleteCounter, deleteCounter + 20);
+
+        // Remove sharing
+        await throttlingBackOff(() =>
+          ssmClient.send(
+            new ModifyDocumentPermissionCommand({
+              Name: name,
+              PermissionType: 'Share',
+              AccountIdsToRemove: itemsToDelete,
+            }),
+          ),
+        );
+        deleteCounter = deleteCounter + 20;
+      }
       return {
         PhysicalResourceId: event.PhysicalResourceId,
         Status: 'SUCCESS',

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,9 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
+import { setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { EnableSharingWithAwsOrganizationCommand, RAMClient } from '@aws-sdk/client-ram';
 /**
  * enable-sharing-with-organization - lambda handler
  *
@@ -27,12 +27,15 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
     }
   | undefined
 > {
-  const client = new AWS.RAM({});
+  const client = new RAMClient({
+    customUserAgent: process.env['SOLUTION_ID'],
+    retryStrategy: setRetryStrategy(),
+  });
 
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
-      await throttlingBackOff(() => client.enableSharingWithAwsOrganization({}).promise());
+      await throttlingBackOff(() => client.send(new EnableSharingWithAwsOrganizationCommand({})));
       return {
         PhysicalResourceId: `ram-enable-sharing-with-aws-organization`,
         Status: 'SUCCESS',

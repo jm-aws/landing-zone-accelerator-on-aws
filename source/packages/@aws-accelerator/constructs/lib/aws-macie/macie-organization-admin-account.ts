@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,8 @@
  *  and limitations under the License.
  */
 
+import { PolicyStatementType } from '@aws-accelerator/utils/lib/common-resources';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
@@ -25,14 +27,69 @@ export interface MacieOrganizationalAdminAccountProps {
    */
   readonly adminAccountId: string;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
 }
+
+export const MacieEnableOrganizationAdminAccountPolicyStatements: PolicyStatementType[] = [
+  {
+    Sid: 'MacieEnableOrganizationAdminAccountTaskOrganizationActions',
+    Effect: 'Allow',
+    Action: [
+      'organizations:DeregisterDelegatedAdministrator',
+      'organizations:DescribeOrganization',
+      'organizations:EnableAWSServiceAccess',
+      'organizations:ListAWSServiceAccessForOrganization',
+      'organizations:ListAccounts',
+      'organizations:ListDelegatedAdministrators',
+      'organizations:RegisterDelegatedAdministrator',
+      'organizations:ServicePrincipal',
+      'organizations:UpdateOrganizationConfiguration',
+    ],
+    Resource: '*',
+    Condition: {
+      StringLikeIfExists: {
+        'organizations:DeregisterDelegatedAdministrator': ['macie.amazonaws.com'],
+        'organizations:DescribeOrganization': ['macie.amazonaws.com'],
+        'organizations:EnableAWSServiceAccess': ['macie.amazonaws.com'],
+        'organizations:ListAWSServiceAccessForOrganization': ['macie.amazonaws.com'],
+        'organizations:ListAccounts': ['macie.amazonaws.com'],
+        'organizations:ListDelegatedAdministrators': ['macie.amazonaws.com'],
+        'organizations:RegisterDelegatedAdministrator': ['macie.amazonaws.com'],
+        'organizations:ServicePrincipal': ['macie.amazonaws.com'],
+        'organizations:UpdateOrganizationConfiguration': ['macie.amazonaws.com'],
+      },
+    },
+  },
+  {
+    Sid: 'MacieEnableOrganizationAdminAccountTaskMacieActions',
+    Effect: 'Allow',
+    Action: [
+      'macie2:DisableOrganizationAdminAccount',
+      'macie2:EnableMacie',
+      'macie2:EnableOrganizationAdminAccount',
+      'macie2:GetMacieSession',
+      'macie2:ListOrganizationAdminAccounts',
+    ],
+    Resource: '*',
+  },
+  {
+    Sid: 'MacieEnableMacieTaskIamAction',
+    Effect: 'Allow',
+    Action: ['iam:CreateServiceLinkedRole'],
+    Resource: '*',
+    Condition: {
+      StringLikeIfExists: {
+        'iam:CreateServiceLinkedRole': ['macie.amazonaws.com'],
+      },
+    },
+  },
+];
 
 /**
  * Aws MacieSession organizational Admin Account
@@ -47,65 +104,9 @@ export class MacieOrganizationAdminAccount extends Construct {
 
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, MACIE_RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'enable-organization-admin-account/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       timeout: cdk.Duration.seconds(180),
-      policyStatements: [
-        {
-          Sid: 'MacieEnableOrganizationAdminAccountTaskOrganizationActions',
-          Effect: 'Allow',
-          Action: [
-            'organizations:DeregisterDelegatedAdministrator',
-            'organizations:DescribeOrganization',
-            'organizations:EnableAWSServiceAccess',
-            'organizations:ListAWSServiceAccessForOrganization',
-            'organizations:ListAccounts',
-            'organizations:ListDelegatedAdministrators',
-            'organizations:RegisterDelegatedAdministrator',
-            'organizations:ServicePrincipal',
-            'organizations:UpdateOrganizationConfiguration',
-          ],
-          Resource: '*',
-          Condition: {
-            StringLikeIfExists: {
-              'organizations:DeregisterDelegatedAdministrator': ['macie.amazonaws.com'],
-              'organizations:DescribeOrganization': ['macie.amazonaws.com'],
-              'organizations:EnableAWSServiceAccess': ['macie.amazonaws.com'],
-              'organizations:ListAWSServiceAccessForOrganization': ['macie.amazonaws.com'],
-              'organizations:ListAccounts': ['macie.amazonaws.com'],
-              'organizations:ListDelegatedAdministrators': ['macie.amazonaws.com'],
-              'organizations:RegisterDelegatedAdministrator': ['macie.amazonaws.com'],
-              'organizations:ServicePrincipal': ['macie.amazonaws.com'],
-              'organizations:UpdateOrganizationConfiguration': ['macie.amazonaws.com'],
-            },
-          },
-        },
-        {
-          Sid: 'MacieEnableOrganizationAdminAccountTaskMacieActions',
-          Effect: 'Allow',
-          Action: [
-            'macie2:DisableOrganizationAdminAccount',
-            'macie2:EnableMacie',
-            'macie2:EnableOrganizationAdminAccount',
-            'macie2:GetMacieSession',
-            'macie2:ListOrganizationAdminAccounts',
-            'macie2:DisableOrganizationAdminAccount',
-            'macie2:GetMacieSession',
-            'macie2:EnableMacie',
-          ],
-          Resource: '*',
-        },
-        {
-          Sid: 'MacieEnableMacieTaskIamAction',
-          Effect: 'Allow',
-          Action: ['iam:CreateServiceLinkedRole'],
-          Resource: '*',
-          Condition: {
-            StringLikeIfExists: {
-              'iam:CreateServiceLinkedRole': ['macie.amazonaws.com'],
-            },
-          },
-        },
-      ],
+      policyStatements: MacieEnableOrganizationAdminAccountPolicyStatements,
     });
 
     const resource = new cdk.CustomResource(this, 'Resource', {

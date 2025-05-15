@@ -1,47 +1,118 @@
 homeRegion: &HOME_REGION us-east-1
+snsSubscriptionConfig:
+  - level: High
+    email: foo@example.com
+# keyManagementService:
+#   keySets:
+#     - name: key1
+#       alias: accelerator/test-key/key1
+#       policy: kms/kms-policy-01.json
+#       description: Test KMS Key
+#       enableKeyRotation: true
+#       enabled: true
+#       removalPolicy: destroy
+#       deploymentTargets:
+#         organizationalUnits:
+#           - Root
+#           - Infrastructure
+keyManagementService:
+  keySets:
+    - name: appEbsKey
+      alias: accelerator/custom-key/appEbsKey
+      policy: kms/applicationEbs.json
+      description: KMS Key for EBS volume encryption of applications
+      enableKeyRotation: true
+      enabled: true
+      removalPolicy: destroy
+      deploymentTargets:
+        accounts:
+          - SharedServices
+        # only deploy in region where application workloads are present
+        excludedRegions:
+          - us-west-2
 centralSecurityServices:
   delegatedAdminAccount: Audit
   ebsDefaultVolumeEncryption:
     enable: true
-    excludeRegions: []
+    #kmsKey: key1
+    deploymentTargets:
+      organizationalUnits:
+        - Root
+      excludedRegions:
+        - us-west-2
   s3PublicAccessBlock:
     enable: true
-    excludeAccounts: []
-  snsSubscriptions:
-    - level: High
-      email: <notify-high>@example.com <----- UPDATE EMAIL ADDRESS
-    - level: Medium
-      email: <notify-medium>@example.com <----- UPDATE EMAIL ADDRESS
-    - level: Low
-      email: <notify-low>@example.com <----- UPDATE EMAIL ADDRESS
+    excludeAccounts:
+      - Management
+  scpRevertChangesConfig:
+    enable: true
+    snsTopicName: Security
   macie:
     enable: true
-    excludeRegions: []
+    excludeRegions:
+      - us-west-2
     policyFindingsPublishingFrequency: FIFTEEN_MINUTES
     publishSensitiveDataFindings: true
+    publishPolicyFindings: true
   guardduty:
     enable: true
-    excludeRegions: []
+    deploymentTargets:
+      accounts:
+        - Management
+        - Network
+      excludedRegions:
+        - us-west-2
+    autoEnableOrgMembers: false
     s3Protection:
       enable: true
-      excludeRegions: []
+      excludeRegions:
+        - us-west-2
+    eksProtection:
+      enable: true
+      manageAgent: true
+      excludeRegions:
+        - us-west-2
+    ec2Protection:
+      enable: true
+      keepSnapshots: true
+      excludeRegions:
+        - us-west-2
+    rdsProtection:
+      enable: true
+      excludeRegions:
+        - us-west-2
+    lambdaProtection:
+      enable: true
+      excludeRegions:
+        - us-west-2
     exportConfiguration:
       enable: true
+      overrideExisting: true
       destinationType: S3
       exportFrequency: FIFTEEN_MINUTES
   auditManager:
     enable: true
-    excludeRegions: []
+    excludeRegions:
+      - us-west-2
     defaultReportsConfiguration:
       enable: true
       destinationType: S3
   detective:
     enable: true
-    excludeRegions: []
+    excludeRegions:
+      - us-west-2
   securityHub:
     enable: true
     regionAggregation: true
-    excludeRegions: []
+    snsTopicName: Security
+    notificationLevel: HIGH
+    logging:
+      cloudWatch:
+        enable: true
+        logLevel: MEDIUM
+    deploymentTargets:
+      organizationalUnits:
+        - Root
     standards:
       - name: AWS Foundational Security Best Practices v1.0.0
         enable: true
@@ -62,6 +133,13 @@ centralSecurityServices:
           - CIS.1.20
           - CIS.1.22
           - CIS.2.6
+      - name: CIS AWS Foundations Benchmark v1.4.0
+        enable: true
+        controlsToDisable:
+          - '1.17'
+          - '1.16'
+      - name: CIS AWS Foundations Benchmark v3.0.0
+        enable: true
   ssmAutomation:
     documentSets:
       - shareTargets:
@@ -77,9 +155,21 @@ centralSecurityServices:
           # Attaches instance profiles to an EC2 instance
           - name: Attach-IAM-Instance-Profile
             template: ssm-documents/attach-iam-instance-profile.yaml
+            targetType: /AWS::EC2::Instance
           # Attaches Aws IAM Managed Policy to IAM Role
           - name: Attach-IAM-Role-Policy
             template: ssm-documents/attach-iam-role-policy.yaml
+          # Turns on CloudWatch logging for WAF ACLs
+          - name: WAF-Enable-Logging
+            template: ssm-documents/waf-enable-logging.yaml
+  snsSubscriptions:
+    - level: High
+      email: notify-high@example.com
+    - level: Medium
+      email: notify-medium@example.com
+    - level: Low
+      email: notify-low@example.com
+
 accessAnalyzer:
   enable: true
 iamPasswordPolicy:
@@ -95,11 +185,108 @@ iamPasswordPolicy:
 awsConfig:
   enableConfigurationRecorder: true
   enableDeliveryChannel: true
+  deploymentTargets:
+    organizationalUnits:
+      - Root
   ruleSets:
+    - deploymentTargets:
+        accounts:
+          - Management
+        organizationalUnits:
+          - Security
+        excludedRegions:
+          - us-west-2
+      rules:
+        - name: accelerator-s3-bucket-server-side-encryption-enabled
+          identifier: S3_BUCKET_SERVER_SIDE_ENCRYPTION_ENABLED
+          complianceResourceTypes:
+            - AWS::S3::Bucket
+          remediation:
+            rolePolicyFile: custom-config-rules/bucket-sse-enabled-remediation-role.json
+            automatic: true
+            targetId: Put-S3-Encryption
+            retryAttemptSeconds: 60
+            maximumAutomaticAttempts: 5
+            parameters:
+              - name: BucketName
+                value: RESOURCE_ID
+                type: String
+              - name: KMSMasterKey
+                value: ${ACCEL_LOOKUP::KMS}
+                type: StringList
     - deploymentTargets:
         organizationalUnits:
           - Root
       rules:
+        - name: accelerator-waf-logging-enabled
+          type: Custom
+          description: Custom rule for checking WAF logging enabled
+          inputParameters:
+          customRule:
+            lambda:
+              sourceFilePath: custom-config-rules/waf-logging-enabled.zip
+              handler: index.handler
+              runtime: python3.12
+              rolePolicyFile: custom-config-rules/waf-logging-enabled-detection-role.json
+            periodic: true
+            maximumExecutionFrequency: Six_Hours
+            configurationChanges: true
+            triggeringResources:
+              lookupType: ResourceTypes
+              lookupKey: ResourceTypes
+              lookupValue:
+                - AWS::WAF::WebACL
+                - AWS::WAFRegional::WebACL
+                - AWS::WAFv2::WebACL
+          remediation:
+            rolePolicyFile: custom-config-rules/waf-logging-enabled-remediation-role.json
+            automatic: true
+            targetId: WAF-Enable-Logging
+            retryAttemptSeconds: 60
+            maximumAutomaticAttempts: 5
+            parameters:
+              - name: WebACLId
+                value: RESOURCE_ID
+                type: String
+        - name: accelerator-target-document-01
+          type: Custom
+          description: Custom rule for testing target document remediation
+          inputParameters:
+          customRule:
+            lambda:
+              sourceFilePath: custom-config-rules/attach-ec2-instance-profile.zip
+              handler: index.handler
+              runtime: nodejs18.x
+              rolePolicyFile: custom-config-rules/attach-ec2-instance-profile-detection-role.json
+            periodic: true
+            maximumExecutionFrequency: Six_Hours
+            configurationChanges: true
+            triggeringResources:
+              lookupType: ResourceTypes
+              lookupKey: ResourceTypes
+              lookupValue:
+                - AWS::EC2::Instance
+          remediation:
+            rolePolicyFile: custom-config-rules/attach-ec2-instance-profile-remediation-role.json
+            automatic: true
+            targetId: Attach-IAM-Instance-Profile
+            targetDocumentLambda:
+              sourceFilePath: custom-config-rules/targetDocumentLambda.zip
+              handler: index.handler
+              runtime: nodejs18.x
+              rolePolicyFile: custom-config-rules/attach-ec2-instance-profile-remediation-role.json
+            retryAttemptSeconds: 60
+            maximumAutomaticAttempts: 5
+            parameters:
+              - name: InstanceId
+                value: RESOURCE_ID
+                type: String
+              - name: IamInstanceProfile
+                value: ${ACCEL_LOOKUP::InstanceProfile:EC2-Default-SSM-AD-Role}
+                type: StringList
+          tags:
+            - key: key
+              value: value
         - name: accelerator-attach-ec2-instance-profile
           type: Custom
           description: Custom rule for checking EC2 instance IAM profile attachment
@@ -108,7 +295,7 @@ awsConfig:
             lambda:
               sourceFilePath: custom-config-rules/attach-ec2-instance-profile.zip
               handler: index.handler
-              runtime: nodejs14.x
+              runtime: nodejs18.x
               rolePolicyFile: custom-config-rules/attach-ec2-instance-profile-detection-role.json
             periodic: true
             maximumExecutionFrequency: Six_Hours
@@ -142,7 +329,7 @@ awsConfig:
             lambda:
               sourceFilePath: custom-config-rules/ec2-instance-profile-permissions.zip
               handler: index.handler
-              runtime: nodejs14.x
+              runtime: nodejs18.x
               rolePolicyFile: custom-config-rules/ec2-instance-profile-permissions-detection-role.json
             periodic: true
             maximumExecutionFrequency: Six_Hours
@@ -169,23 +356,6 @@ awsConfig:
               # - name: CustomerManagedPolicies
               #   value: ${ACCEL_LOOKUP::CustomerManagedPolicy:policy-00},${ACCEL_LOOKUP::CustomerManagedPolicy:policy-01}
               #   type: StringList
-        - name: accelerator-s3-bucket-server-side-encryption-enabled
-          identifier: S3_BUCKET_SERVER_SIDE_ENCRYPTION_ENABLED
-          complianceResourceTypes:
-            - AWS::S3::Bucket
-          remediation:
-            rolePolicyFile: custom-config-rules/bucket-sse-enabled-remediation-role.json
-            automatic: true
-            targetId: Put-S3-Encryption
-            retryAttemptSeconds: 60
-            maximumAutomaticAttempts: 5
-            parameters:
-              - name: BucketName
-                value: RESOURCE_ID
-                type: String
-              - name: KMSMasterKey
-                value: ${ACCEL_LOOKUP::KMS}
-                type: StringList
         - name: accelerator-elb-logging-enabled
           identifier: ELB_LOGGING_ENABLED
           complianceResourceTypes:
@@ -222,14 +392,14 @@ awsConfig:
           complianceResourceTypes:
             - AWS::CloudWatch::Alarm
           inputParameters:
-            alarmActionRequired: "TRUE"
-            insufficientDataActionRequired: "TRUE"
-            okActionRequired: "FALSE"
+            alarmActionRequired: 'TRUE'
+            insufficientDataActionRequired: 'TRUE'
+            okActionRequired: 'FALSE'
           identifier: CLOUDWATCH_ALARM_ACTION_CHECK
         - name: accelerator-redshift-cluster-configuration-check
           inputParameters:
-            clusterDbEncrypted: "TRUE"
-            loggingEnabled: "TRUE"
+            clusterDbEncrypted: 'TRUE'
+            loggingEnabled: 'TRUE'
           complianceResourceTypes:
             - AWS::Redshift::Cluster
           identifier: REDSHIFT_CLUSTER_CONFIGURATION_CHECK
@@ -255,8 +425,8 @@ awsConfig:
           identifier: INSTANCES_IN_VPC
         - name: accelerator-vpc-sg-open-only-to-authorized-ports
           inputParameters:
-            authorizedTcpPorts: "443"
-            authorizedUdpPorts: "1020-1025"
+            authorizedTcpPorts: '443'
+            authorizedUdpPorts: '1020-1025'
           complianceResourceTypes:
             - AWS::EC2::SecurityGroup
           identifier: VPC_SG_OPEN_ONLY_TO_AUTHORIZED_PORTS
@@ -307,7 +477,7 @@ awsConfig:
           identifier: EC2_INSTANCE_DETAILED_MONITORING_ENABLED
         - name: accelerator-ec2-volume-inuse-check
           inputParameters:
-            deleteOnTermination: "TRUE"
+            deleteOnTermination: 'TRUE'
           complianceResourceTypes:
             - AWS::EC2::Volume
           identifier: EC2_VOLUME_INUSE_CHECK
@@ -335,9 +505,9 @@ awsConfig:
           identifier: IAM_USER_MFA_ENABLED
         - name: accelerator-guardduty-non-archived-findings
           inputParameters:
-            daysHighSev: "1"
-            daysLowSev: "30"
-            daysMediumSev: "7"
+            daysHighSev: '1'
+            daysLowSev: '30'
+            daysMediumSev: '7'
           identifier: GUARDDUTY_NON_ARCHIVED_FINDINGS
         - name: accelerator-elasticsearch-node-to-node-encryption-check
           complianceResourceTypes:
@@ -363,7 +533,57 @@ awsConfig:
           complianceResourceTypes:
             - AWS::S3::Bucket
           identifier: S3_BUCKET_DEFAULT_LOCK_ENABLED
+        - name: accelerator-duplicate-s3-rule
+          identifier: S3_BUCKET_SERVER_SIDE_ENCRYPTION_ENABLED
+          remediation:
+            automatic: true
+            targetId: AWS-EnableS3BucketEncryption
+            rolePolicyFile: custom-config-rules/enable-s3-encryption.json
+            retryAttemptSeconds: 60
+            maximumAutomaticAttempts: 5
+            parameters:
+              - name: BucketName
+                value: RESOURCE_ID
+                type: String
+              - name: SSEAlgorithm
+                value: AES256
+                type: String
 cloudWatch:
+  logGroups:
+    - logGroupName: /App/Test1
+      logRetentionInDays: 30
+      terminationProtected: true
+      encryption:
+        useLzaManagedKey: true
+      deploymentTargets:
+        accounts:
+          - SharedServices
+    - logGroupName: /App/Test2
+      logRetentionInDays: 180
+      terminationProtected: false
+      encryption:
+        kmsKeyArn: 'arn:aws:kms:us-east-1:111111111111:key/121ac3b6-8d53-4d8a-a05c-1234567789'
+      deploymentTargets:
+        accounts:
+          - Management
+        excludedRegions:
+          - us-west-2
+    - logGroupName: /App/Test3
+      logRetentionInDays: 365
+      terminationProtected: false
+      deploymentTargets:
+        organizationalUnits:
+          - Infrastructure
+        excludedRegions:
+          - us-east-1
+    - logGroupName: /App/Test4
+      logRetentionInDays: 14
+      terminationProtected: true
+      # encryption:
+      #   kmsKeyName: key1
+      deploymentTargets:
+        organizationalUnits:
+          - Infrastructure
   metricSets:
     - regions:
         - *HOME_REGION
@@ -373,109 +593,175 @@ cloudWatch:
       metrics:
         # CIS 1.1 – Avoid the use of the "root" account
         - filterName: RootAccountMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
           filterPattern: '{$.userIdentity.type="Root" && $.userIdentity.invokedBy NOT EXISTS && $.eventType !="AwsServiceEvent"}'
           metricNamespace: LogMetrics
           metricName: RootAccount
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.1 – Ensure a log metric filter and alarm exist for unauthorized API calls
         - filterName: UnauthorizedAPICallsMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
           filterPattern: '{($.errorCode="*UnauthorizedOperation") || ($.errorCode="AccessDenied*")}'
           metricNamespace: LogMetrics
           metricName: UnauthorizedAPICalls
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.2 – Ensure a log metric filter and alarm exist for AWS Management Console sign-in without MFA
         - filterName: ConsoleSigninWithoutMFAMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
           filterPattern: '{($.eventName = "ConsoleLogin") && ($.additionalEventData.MFAUsed != "Yes") && ($.userIdentity.type = "IAMUser") && ($.responseElements.ConsoleLogin = "Success")}'
           metricNamespace: LogMetrics
           metricName: ConsoleSigninWithoutMFA
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.3 – Ensure a log metric filter and alarm exist for usage of "root" account
         - filterName: MetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
           filterPattern: '{$.userIdentity.type="Root" && $.userIdentity.invokedBy NOT EXISTS && $.eventType !="AwsServiceEvent"}'
           metricNamespace: LogMetrics
           metricName: RootAccountUsage
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.4 – Ensure a log metric filter and alarm exist for IAM policy changes
         - filterName: IAMPolicyChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventName=DeleteGroupPolicy) || ($.eventName=DeleteRolePolicy) || ($.eventName=DeleteUserPolicy) || ($.eventName=PutGroupPolicy) || ($.eventName=PutRolePolicy) || ($.eventName=PutUserPolicy) || ($.eventName=CreatePolicy) || ($.eventName=DeletePolicy) || ($.eventName=CreatePolicyVersion) || ($.eventName=DeletePolicyVersion) || ($.eventName=AttachRolePolicy) || ($.eventName=DetachRolePolicy) || ($.eventName=AttachUserPolicy) || ($.eventName=DetachUserPolicy) || ($.eventName=AttachGroupPolicy) || ($.eventName=DetachGroupPolicy)}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventName=DeleteGroupPolicy) || ($.eventName=DeleteRolePolicy) || ($.eventName=DeleteUserPolicy) || ($.eventName=PutGroupPolicy) || ($.eventName=PutRolePolicy) || ($.eventName=PutUserPolicy) || ($.eventName=CreatePolicy) || ($.eventName=DeletePolicy) || ($.eventName=CreatePolicyVersion) || ($.eventName=DeletePolicyVersion) || ($.eventName=AttachRolePolicy) || ($.eventName=DetachRolePolicy) || ($.eventName=AttachUserPolicy) || ($.eventName=DetachUserPolicy) || ($.eventName=AttachGroupPolicy) || ($.eventName=DetachGroupPolicy)}'
           metricNamespace: LogMetrics
           metricName: IAMPolicyChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.5 – Ensure a log metric filter and alarm exist for CloudTrail configuration changes
         - filterName: CloudTrailChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventName=CreateTrail) || ($.eventName=UpdateTrail) || ($.eventName=DeleteTrail) || ($.eventName=StartLogging) || ($.eventName=StopLogging)}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventName=CreateTrail) || ($.eventName=UpdateTrail) || ($.eventName=DeleteTrail) || ($.eventName=StartLogging) || ($.eventName=StopLogging)}'
           metricNamespace: LogMetrics
           metricName: CloudTrailChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.6 – Ensure a log metric filter and alarm exist for AWS Management Console authentication failures
         - filterName: ConsoleAuthenticationFailureMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
           filterPattern: '{($.eventName=ConsoleLogin) && ($.errorMessage="Failed authentication")}'
           metricNamespace: LogMetrics
           metricName: ConsoleAuthenticationFailure
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.7 – Ensure a log metric filter and alarm exist for disabling or scheduled deletion of customer created CMKs
         - filterName: DisableOrDeleteCMKMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventSource=kms.amazonaws.com) && (($.eventName=DisableKey) || ($.eventName=ScheduleKeyDeletion))}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventSource=kms.amazonaws.com) && (($.eventName=DisableKey) || ($.eventName=ScheduleKeyDeletion))}'
           metricNamespace: LogMetrics
           metricName: DisableOrDeleteCMK
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.8 – Ensure a log metric filter and alarm exist for S3 bucket policy changes
         - filterName: S3BucketPolicyChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventSource=s3.amazonaws.com) && (($.eventName=PutBucketAcl) || ($.eventName=PutBucketPolicy) || ($.eventName=PutBucketCors) || ($.eventName=PutBucketLifecycle) || ($.eventName=PutBucketReplication) || ($.eventName=DeleteBucketPolicy) || ($.eventName=DeleteBucketCors) || ($.eventName=DeleteBucketLifecycle) || ($.eventName=DeleteBucketReplication))}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventSource=s3.amazonaws.com) && (($.eventName=PutBucketAcl) || ($.eventName=PutBucketPolicy) || ($.eventName=PutBucketCors) || ($.eventName=PutBucketLifecycle) || ($.eventName=PutBucketReplication) || ($.eventName=DeleteBucketPolicy) || ($.eventName=DeleteBucketCors) || ($.eventName=DeleteBucketLifecycle) || ($.eventName=DeleteBucketReplication))}'
           metricNamespace: LogMetrics
           metricName: S3BucketPolicyChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.9 – Ensure a log metric filter and alarm exist for AWS Config configuration changes
         - filterName: AWSConfigChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventSource=config.amazonaws.com) && (($.eventName=StopConfigurationRecorder) || ($.eventName=DeleteDeliveryChannel) || ($.eventName=PutDeliveryChannel) || ($.eventName=PutConfigurationRecorder))}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventSource=config.amazonaws.com) && (($.eventName=StopConfigurationRecorder) || ($.eventName=DeleteDeliveryChannel) || ($.eventName=PutDeliveryChannel) || ($.eventName=PutConfigurationRecorder))}'
           metricNamespace: LogMetrics
           metricName: AWSConfigChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.10 – Ensure a log metric filter and alarm exist for security group changes
         - filterName: SecurityGroupChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventName=AuthorizeSecurityGroupIngress) || ($.eventName=AuthorizeSecurityGroupEgress) || ($.eventName=RevokeSecurityGroupIngress) || ($.eventName=RevokeSecurityGroupEgress) || ($.eventName=CreateSecurityGroup) || ($.eventName=DeleteSecurityGroup)}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventName=AuthorizeSecurityGroupIngress) || ($.eventName=AuthorizeSecurityGroupEgress) || ($.eventName=RevokeSecurityGroupIngress) || ($.eventName=RevokeSecurityGroupEgress) || ($.eventName=CreateSecurityGroup) || ($.eventName=DeleteSecurityGroup)}'
           metricNamespace: LogMetrics
           metricName: SecurityGroupChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.11 – Ensure a log metric filter and alarm exist for changes to Network Access Control Lists (NACL)
         - filterName: NetworkACLChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventName=CreateNetworkAcl) || ($.eventName=CreateNetworkAclEntry) || ($.eventName=DeleteNetworkAcl) || ($.eventName=DeleteNetworkAclEntry) || ($.eventName=ReplaceNetworkAclEntry) || ($.eventName=ReplaceNetworkAclAssociation)}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventName=CreateNetworkAcl) || ($.eventName=CreateNetworkAclEntry) || ($.eventName=DeleteNetworkAcl) || ($.eventName=DeleteNetworkAclEntry) || ($.eventName=ReplaceNetworkAclEntry) || ($.eventName=ReplaceNetworkAclAssociation)}'
           metricNamespace: LogMetrics
           metricName: NetworkACLChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.12 – Ensure a log metric filter and alarm exist for changes to network gateways
         - filterName: NetworkGatewayChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventName=CreateCustomerGateway) || ($.eventName=DeleteCustomerGateway) || ($.eventName=AttachInternetGateway) || ($.eventName=CreateInternetGateway) || ($.eventName=DeleteInternetGateway) || ($.eventName=DetachInternetGateway)}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventName=CreateCustomerGateway) || ($.eventName=DeleteCustomerGateway) || ($.eventName=AttachInternetGateway) || ($.eventName=CreateInternetGateway) || ($.eventName=DeleteInternetGateway) || ($.eventName=DetachInternetGateway)}'
           metricNamespace: LogMetrics
           metricName: NetworkGatewayChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.13 – Ensure a log metric filter and alarm exist for route table changes
         - filterName: RouteTableChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventName=CreateRoute) || ($.eventName=CreateRouteTable) || ($.eventName=ReplaceRoute) || ($.eventName=ReplaceRouteTableAssociation) || ($.eventName=DeleteRouteTable) || ($.eventName=DeleteRoute) || ($.eventName=DisassociateRouteTable)}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventName=CreateRoute) || ($.eventName=CreateRouteTable) || ($.eventName=ReplaceRoute) || ($.eventName=ReplaceRouteTableAssociation) || ($.eventName=DeleteRouteTable) || ($.eventName=DeleteRoute) || ($.eventName=DisassociateRouteTable)}'
           metricNamespace: LogMetrics
           metricName: RouteTableChanges
-          metricValue: "1"
+          metricValue: '1'
         # CIS 3.14 – Ensure a log metric filter and alarm exist for VPC changes
         - filterName: VPCChangesMetricFilter
-          logGroupName: aws-controltower/CloudTrailLogs
-          filterPattern: "{($.eventName=CreateVpc) || ($.eventName=DeleteVpc) || ($.eventName=ModifyVpcAttribute) || ($.eventName=AcceptVpcPeeringConnection) || ($.eventName=CreateVpcPeeringConnection) || ($.eventName=DeleteVpcPeeringConnection) || ($.eventName=RejectVpcPeeringConnection) || ($.eventName=AttachClassicLinkVpc) || ($.eventName=DetachClassicLinkVpc) || ($.eventName=DisableVpcClassicLink) || ($.eventName=EnableVpcClassicLink)}"
+          logGroupName: aws-accelerator-cloudtrail-AWSAccelerator-Account-CloudTrail
+          filterPattern: '{($.eventName=CreateVpc) || ($.eventName=DeleteVpc) || ($.eventName=ModifyVpcAttribute) || ($.eventName=AcceptVpcPeeringConnection) || ($.eventName=CreateVpcPeeringConnection) || ($.eventName=DeleteVpcPeeringConnection) || ($.eventName=RejectVpcPeeringConnection) || ($.eventName=AttachClassicLinkVpc) || ($.eventName=DetachClassicLinkVpc) || ($.eventName=DisableVpcClassicLink) || ($.eventName=EnableVpcClassicLink)}'
           metricNamespace: LogMetrics
           metricName: VPCChanges
-          metricValue: "1"
+          metricValue: '1'
+    #     # greater than threshold test
+    #     - filterName: GenericMetricFilterGreaterThanThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingGreaterThanThreshold
+    #       metricValue: '1'
+    #     # less than threshold test
+    #     - filterName: GenericMetricFilterLessThanThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingLessThanThreshold
+    #       metricValue: '1'
+    #     # less than or equal to threshold test
+    #     - filterName: GenericMetricFilterLessThanOrEqualToThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingLessThanOrEqualToThreshold
+    #       metricValue: '1'
+    #     # less than lower or greater than upper threshold test
+    #     - filterName: GenericMetricFilterLessThanLowerOrGreaterThanUpperThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingLessThanLowerOrGreaterThanUpperThreshold
+    #       metricValue: '1'
+    #     # greater than upper threshold test
+    #     - filterName: GenericMetricFilterGreaterThanUpperThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingGreaterThanUpperThreshold
+    #       metricValue: '1'
+    #     # less than lower threshold test
+    #     - filterName: GenericMetricFilterLessThanLowerThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingLessThanLowerThreshold
+    #       metricValue: '1'
+    # - regions:
+    #     - *HOME_REGION
+    #   deploymentTargets:
+    #     account:
+    #       - SharedServices
+    #   metrics:
+    #     - filterName: GenericMetricFilterGreaterThanOrEqualToThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingGreaterThanOrEqualToThreshold
+    #       metricValue: '1'
+    #     - filterName: GenericMetricFilterGreaterThanThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingGreaterThanThreshold
+    #       metricValue: '1'
+    #     - filterName: GenericMetricFilterLessThanThreshold
+    #       logGroupName: /generic/log/group
+    #       filterPattern: '{$.eventType !="AwsServiceEvent"}'
+    #       metricNamespace: LzaMetrics
+    #       metricName: GenericMetricForTestingLessThanThreshold
+    #       metricValue: '1'
   alarmSets:
     - regions:
         - *HOME_REGION
@@ -486,7 +772,7 @@ cloudWatch:
         # CIS 1.1 – Avoid the use of the "root" account
         - alarmName: CIS-1.1-RootAccountUsage
           alarmDescription: Alarm for usage of "root" account
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: RootAccountUsage
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -498,7 +784,7 @@ cloudWatch:
         # CIS 3.1 – Ensure a log metric filter and alarm exist for unauthorized API calls
         - alarmName: CIS-3.1-UnauthorizedAPICalls
           alarmDescription: Alarm for unauthorized API calls
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: UnauthorizedAPICalls
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -510,7 +796,7 @@ cloudWatch:
         # CIS 3.2 – Ensure a log metric filter and alarm exist for AWS Management Console sign-in without MFA
         - alarmName: CIS-3.2-ConsoleSigninWithoutMFA
           alarmDescription: Alarm for AWS Management Console sign-in without MFA
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: ConsoleSigninWithoutMFA
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -522,7 +808,7 @@ cloudWatch:
         # CIS 3.3 – Ensure a log metric filter and alarm exist for usage of "root" account
         - alarmName: CIS-3.3-RootAccountUsage
           alarmDescription: Alarm for usage of "root" account
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: RootAccountUsage
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -534,7 +820,7 @@ cloudWatch:
         # CIS 3.4 – Ensure a log metric filter and alarm exist for IAM policy changes
         - alarmName: CIS-3.4-IAMPolicyChanges
           alarmDescription: Alarm for IAM policy changes
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: IAMPolicyChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -546,7 +832,7 @@ cloudWatch:
         # CIS 3.5 – Ensure a log metric filter and alarm exist for CloudTrail configuration changes
         - alarmName: CIS-3.5-CloudTrailChanges
           alarmDescription: Alarm for CloudTrail configuration changes
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: CloudTrailChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -558,7 +844,7 @@ cloudWatch:
         # CIS 3.6 – Ensure a log metric filter and alarm exist for AWS Management Console authentication failures
         - alarmName: CIS-3.6-ConsoleAuthenticationFailure
           alarmDescription: Alarm exist for AWS Management Console authentication failures
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: ConsoleAuthenticationFailure
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -570,7 +856,7 @@ cloudWatch:
         # CIS 3.7 – Ensure a log metric filter and alarm exist for disabling or scheduled deletion of customer created CMKs
         - alarmName: CIS-3.7-DisableOrDeleteCMK
           alarmDescription: Alarm for disabling or scheduled deletion of customer created CMKs
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: DisableOrDeleteCMK
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -582,7 +868,7 @@ cloudWatch:
         # CIS 3.8 – Ensure a log metric filter and alarm exist for S3 bucket policy changes
         - alarmName: CIS-3.8-S3BucketPolicyChanges.
           alarmDescription: Alarm for S3 bucket policy changes
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: S3BucketPolicyChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -594,7 +880,7 @@ cloudWatch:
         # CIS 3.9 – Ensure a log metric filter and alarm exist for AWS Config configuration changes
         - alarmName: CIS-3.9-AWSConfigChanges
           alarmDescription: Alarm for AWS Config configuration changes
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: AWSConfigChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -606,7 +892,7 @@ cloudWatch:
         # CIS 3.10 – Ensure a log metric filter and alarm exist for security group changes
         - alarmName: CIS-3.10-SecurityGroupChanges
           alarmDescription: Alarm for security group changes
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: SecurityGroupChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -618,7 +904,7 @@ cloudWatch:
         # CIS 3.11 – Ensure a log metric filter and alarm exist for changes to Network Access Control Lists (NACL)
         - alarmName: CIS-3.11-NetworkACLChanges
           alarmDescription: Alarm for changes to Network Access Control Lists (NACL)
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: NetworkACLChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -630,7 +916,7 @@ cloudWatch:
         # CIS 3.12 – Ensure a log metric filter and alarm exist for changes to network gateways
         - alarmName: CIS-3.12-NetworkGatewayChanges
           alarmDescription: Alarm for changes to network gateways
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: NetworkGatewayChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -642,7 +928,7 @@ cloudWatch:
         # CIS 3.13 – Ensure a log metric filter and alarm exist for route table changes
         - alarmName: CIS-3.13-RouteTableChanges
           alarmDescription: Alarm for route table changes
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: RouteTableChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -654,7 +940,7 @@ cloudWatch:
         # CIS 3.14 – Ensure a log metric filter and alarm exist for VPC changes
         - alarmName: CIS-3.14-VPCChanges
           alarmDescription: Alarm for VPC changes
-          snsAlertLevel: Low
+          snsTopicName: Security
           metricName: VPCChanges
           namespace: LogMetrics
           comparisonOperator: GreaterThanOrEqualToThreshold
@@ -663,3 +949,116 @@ cloudWatch:
           statistic: Sum
           threshold: 1
           treatMissingData: notBreaching
+        # greater than threshold test
+        - alarmName: GenericMetricGreaterThanThreshold
+          alarmDescription: Alarm to test GenericMetric GreaterThanThreshold
+          snsTopicName: Security
+          metricName: GenericMetricForTestingGreaterThanThreshold
+          namespace: LzaMetrics
+          comparisonOperator: GreaterThanThreshold
+          evaluationPeriods: 1
+          period: 300
+          statistic: Sum
+          threshold: 1
+          treatMissingData: ignore
+        # less than threshold testing
+        - alarmName: GenericMetricLessThanThreshold
+          alarmDescription: Alarm to test GenericMetric LessThanThreshold
+          snsTopicName: Security
+          metricName: GenericMetricForTestingLessThanThreshold
+          namespace: LzaMetrics
+          comparisonOperator: LessThanThreshold
+          evaluationPeriods: 1
+          period: 300
+          statistic: Sum
+          threshold: 1
+          treatMissingData: missing
+        # less than or equal to threshold test
+        - alarmName: GenericMetricLessThanOrEqualToThreshold
+          alarmDescription: Alarm to test GenericMetric LessThanOrEqualToThreshold
+          snsTopicName: Security
+          metricName: GenericMetricForTestingLessThanOrEqualToThreshold
+          namespace: LzaMetrics
+          comparisonOperator: LessThanOrEqualToThreshold
+          evaluationPeriods: 1
+          period: 300
+          statistic: Sum
+          threshold: 1
+          treatMissingData: notBreaching
+        # less than lower or greater than upper threshold test
+        # - alarmName: GenericMetricLessThanLowerOrGreaterThanUpperThreshold
+        #   alarmDescription: Alarm to test GenericMetric LessThanLowerOrGreaterThanUpperThreshold
+        #   snsTopicName: Security
+        #   metricName: GenericMetricForTestingLessThanLowerOrGreaterThanUpperThreshold
+        #   namespace: LzaMetrics
+        #   comparisonOperator: LessThanLowerOrGreaterThanUpperThreshold
+        #   evaluationPeriods: 1
+        #   period: 300
+        #   statistic: Sum
+        #   threshold: 1
+        #   treatMissingData: notBreaching
+        # greater than upper threshold test
+        # - alarmName: GenericMetricGreaterThanUpperThreshold
+        #   alarmDescription: Alarm to test GenericMetric GreaterThanUpperThreshold
+        #   snsTopicName: Security
+        #   metricName: GenericMetricForTestingGreaterThanUpperThreshold
+        #   namespace: LzaMetrics
+        #   comparisonOperator: GreaterThanUpperThreshold
+        #   evaluationPeriods: 1
+        #   period: 300
+        #   statistic: Sum
+        #   threshold: 1
+        #   treatMissingData: notBreaching
+        # less than lower threshold test
+        # - alarmName: GenericMetricLessThanLowerThreshold
+        #   alarmDescription: Alarm to test GenericMetric LessThanLowerThreshold
+        #   snsTopicName: Security
+        #   metricName: GenericMetricForTestingLessThanLowerThreshold
+        #   namespace: LzaMetrics
+        #   comparisonOperator: LessThanLowerThreshold
+        #   evaluationPeriods: 1
+        #   period: 300
+        #   statistic: Sum
+        #   threshold: 1
+        #   treatMissingData: notBreaching
+resourcePolicyEnforcement:
+  enable: true
+  remediation:
+    automatic: false
+    retryAttemptSeconds: 60
+    maximumAutomaticAttempts: 5
+  policySets:
+    - resourcePolicies:
+        - resourceType: IAM_ROLE
+          document: resource-policies/iam.json
+        - resourceType: S3_BUCKET
+          document: resource-policies/s3.json
+        - resourceType: KMS_KEY
+          document: resource-policies/kms.json
+        - resourceType: SECRETS_MANAGER_SECRET
+          document: resource-policies/secrets-manager.json
+        - resourceType: ECR_REPOSITORY
+          document: resource-policies/ecr.json
+        - resourceType: OPENSEARCH_DOMAIN
+          document: resource-policies/opensearch.json
+        - resourceType: SNS_TOPIC
+          document: resource-policies/sns.json
+        - resourceType: SQS_QUEUE
+          document: resource-policies/sqs.json
+        - resourceType: APIGATEWAY_REST_API
+          document: resource-policies/apigateway.json
+        - resourceType: LEX_BOT
+          document: resource-policies/lex-bot.json
+        - resourceType: EFS_FILE_SYSTEM
+          document: resource-policies/efs-file-system.json
+        - resourceType: EVENTBRIDGE_EVENTBUS
+          document: resource-policies/eventbridge-eventbus.json
+        - resourceType: BACKUP_VAULT
+          document: resource-policies/backup-vault.json
+        - resourceType: CODEARTIFACT_REPOSITORY
+          document: resource-policies/codeartifact-repository.json
+      inputParameters:
+        SourceAccount: '{{ ALLOWED_EXTERNAL_ACCOUNTS }}'
+      deploymentTargets:
+        organizationalUnits:
+          - Root

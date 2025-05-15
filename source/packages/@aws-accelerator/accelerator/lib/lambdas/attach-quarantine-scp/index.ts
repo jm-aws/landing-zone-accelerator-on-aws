@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,9 +12,9 @@
  */
 
 import * as AWS from 'aws-sdk';
-import { delay, throttlingBackOff } from '@aws-accelerator/utils';
-
-const organizationsClient = new AWS.Organizations({ region: 'us-east-1' });
+import { delay, throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { Context } from '@aws-accelerator/utils/lib/common-types';
+import { getGlobalRegion } from '@aws-accelerator/utils/lib/common-functions';
 
 /**
  * attach-quarantine-scp - lambda handler
@@ -23,8 +23,16 @@ const organizationsClient = new AWS.Organizations({ region: 'us-east-1' });
  * @returns
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function handler(event: any): Promise<any> {
+export async function handler(event: any, context: Context): Promise<any> {
   console.log(event);
+
+  const partition = context.invokedFunctionArn.split(':')[1];
+  const globalRegion = getGlobalRegion(partition);
+  // Move to setOrganizationsClient method after refactoring to SDK v3
+  const organizationsClient = new AWS.Organizations({
+    customUserAgent: process.env['SOLUTION_ID'],
+    region: globalRegion,
+  });
 
   // eslint-disable-next-line prefer-const
   const policyName: string = process.env['SCP_POLICY_NAME'] ?? '';
@@ -32,13 +40,13 @@ export async function handler(event: any): Promise<any> {
   const createAccountStatus = JSON.parse(JSON.stringify(event.detail.responseElements.createAccountStatus));
   console.log(`Create Account Request Id: ${createAccountStatus.id}`);
 
-  let statusResponse = await getAccountCreationStatus(createAccountStatus.id);
+  let statusResponse = await getAccountCreationStatus(createAccountStatus.id, organizationsClient);
   while (statusResponse.CreateAccountStatus?.State !== 'SUCCEEDED') {
     await delay(1000);
-    statusResponse = await getAccountCreationStatus(createAccountStatus.id);
+    statusResponse = await getAccountCreationStatus(createAccountStatus.id, organizationsClient);
   }
   if (statusResponse.CreateAccountStatus?.State === 'SUCCEEDED') {
-    const policyId = await getPolicyId(policyName);
+    const policyId = await getPolicyId(policyName, organizationsClient);
     if (policyId === 'NotFound') {
       console.error(
         `Policy with name ${policyName} was not found. Policy was not applied to account ${statusResponse.CreateAccountStatus.AccountId}`,
@@ -47,7 +55,7 @@ export async function handler(event: any): Promise<any> {
         statusCode: 200,
       };
     }
-    await attachQuarantineScp(statusResponse.CreateAccountStatus.AccountId ?? '', policyId ?? '');
+    await attachQuarantineScp(statusResponse.CreateAccountStatus.AccountId ?? '', policyId ?? '', organizationsClient);
   }
   console.log(statusResponse);
   return {
@@ -57,20 +65,19 @@ export async function handler(event: any): Promise<any> {
 
 async function getAccountCreationStatus(
   requestId: string,
+  orgsClient: AWS.Organizations,
 ): Promise<AWS.Organizations.DescribeCreateAccountStatusResponse> {
   return throttlingBackOff(() =>
-    organizationsClient.describeCreateAccountStatus({ CreateAccountRequestId: requestId }).promise(),
+    orgsClient.describeCreateAccountStatus({ CreateAccountRequestId: requestId }).promise(),
   );
 }
 
-async function getPolicyId(policyName: string) {
+async function getPolicyId(policyName: string, orgsClient: AWS.Organizations) {
   console.log(`Looking for policy named ${policyName}`);
   const scpPolicies: AWS.Organizations.PolicySummary[] = [];
   let nextToken: string | undefined = undefined;
   do {
-    const page = await throttlingBackOff(() =>
-      organizationsClient.listPolicies({ Filter: 'SERVICE_CONTROL_POLICY' }).promise(),
-    );
+    const page = await throttlingBackOff(() => orgsClient.listPolicies({ Filter: 'SERVICE_CONTROL_POLICY' }).promise());
 
     for (const scpPolicy of page.Policies ?? []) {
       console.log(`Policy named ${scpPolicy.Name} added to list`);
@@ -88,10 +95,14 @@ async function getPolicyId(policyName: string) {
   }
 }
 
-async function attachQuarantineScp(accountId: string, policyId: string): Promise<boolean> {
+async function attachQuarantineScp(
+  accountId: string,
+  policyId: string,
+  orgsClient: AWS.Organizations,
+): Promise<boolean> {
   try {
     await throttlingBackOff(() =>
-      organizationsClient
+      orgsClient
         .attachPolicy({
           PolicyId: policyId,
           TargetId: accountId,

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -74,7 +74,7 @@ export interface ResolverRuleProps {
   /**
    * Custom resource lambda log group encryption key
    */
-  readonly kmsKey?: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
@@ -93,21 +93,19 @@ export class ResolverRule extends cdk.Resource implements IResolverRule {
     this.name = props.name;
 
     if (props.targetInbound) {
-      if (!props.kmsKey) {
-        throw new Error(`kmsKey property must be included if targetInbound property is defined.`);
-      }
       if (!props.logRetentionInDays) {
         throw new Error(`logRetentionInDays property must be included if targetInbound property is defined.`);
       }
-      this.targetIps = this.lookupInbound(props.targetInbound, props.kmsKey, props.logRetentionInDays);
+      this.targetIps = this.lookupInbound(props.targetInbound, props.logRetentionInDays, props.kmsKey);
     } else {
       this.targetIps = props.targetIps;
     }
 
     const resource = new cdk.aws_route53resolver.CfnResolverRule(this, 'Resource', {
       domainName: props.domainName,
-      resolverEndpointId: props.resolverEndpointId,
+      resolverEndpointId: props.ruleType === 'SYSTEM' ? undefined : props.resolverEndpointId,
       ruleType: props.ruleType ?? 'FORWARD',
+      name: this.name,
       targetIps: this.targetIps,
       tags: props.tags,
     });
@@ -117,7 +115,7 @@ export class ResolverRule extends cdk.Resource implements IResolverRule {
     this.ruleId = resource.attrResolverRuleId;
   }
 
-  private lookupInbound(endpointId: string, kmsKey: cdk.aws_kms.Key, logRetentionInDays: number): cdk.Reference {
+  private lookupInbound(endpointId: string, logRetentionInDays: number, kmsKey?: cdk.aws_kms.IKey): cdk.Reference {
     const lookup = new EndpointAddresses(this, 'LookupInbound', {
       endpointId: endpointId,
       kmsKey,

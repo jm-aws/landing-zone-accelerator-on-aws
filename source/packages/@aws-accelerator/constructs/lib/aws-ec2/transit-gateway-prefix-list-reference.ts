@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,7 @@
  *  and limitations under the License.
  */
 
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
@@ -20,27 +21,34 @@ export interface TransitGatewayPrefixListReferenceProps {
    * The prefix list ID to reference
    */
   readonly prefixListId: string;
-
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly logGroupKmsKey: cdk.aws_kms.Key;
-
+  readonly logGroupKmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
-
   /**
    * The ID of the transit gateway route table.
    */
   readonly transitGatewayRouteTableId: string;
-
   /**
    * Determines if route is blackholed.
    */
   readonly blackhole?: boolean;
-
+  /**
+   * Owning account ID for cross-account TGW associations
+   */
+  readonly owningAccountId?: string;
+  /**
+   * Owning region for cross-account TGW associations
+   */
+  readonly owningRegion?: string;
+  /**
+   * Role name for cross-account TGW associations
+   */
+  readonly roleName?: string;
   /**
    * The identifier of the Transit Gateway Attachment
    *
@@ -54,21 +62,32 @@ export class TransitGatewayPrefixListReference extends cdk.Resource {
   constructor(scope: Construct, id: string, props: TransitGatewayPrefixListReferenceProps) {
     super(scope, id);
 
+    const policyStatements = [
+      {
+        Sid: 'AllowModifyTgwReferences',
+        Effect: 'Allow',
+        Action: [
+          'ec2:CreateTransitGatewayPrefixListReference',
+          'ec2:ModifyTransitGatewayPrefixListReference',
+          'ec2:DeleteTransitGatewayPrefixListReference',
+        ],
+        Resource: '*',
+      },
+    ];
+
+    if (props.roleName) {
+      policyStatements.push({
+        Sid: 'AssumeRole',
+        Effect: 'Allow',
+        Action: ['sts:AssumeRole'],
+        Resource: `arn:${this.stack.partition}:iam::*:role/${props.roleName}`,
+      });
+    }
+
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, 'Custom::TransitGatewayPrefixListReference', {
       codeDirectory: path.join(__dirname, 'transit-gateway-prefix-list-reference/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
-      policyStatements: [
-        {
-          Sid: 'AllowModifyTgwReferences',
-          Effect: 'Allow',
-          Action: [
-            'ec2:CreateTransitGatewayPrefixListReference',
-            'ec2:ModifyTransitGatewayPrefixListReference',
-            'ec2:DeleteTransitGatewayPrefixListReference',
-          ],
-          Resource: '*',
-        },
-      ],
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
+      policyStatements,
     });
 
     const resource = new cdk.CustomResource(this, 'Resource', {
@@ -81,6 +100,9 @@ export class TransitGatewayPrefixListReference extends cdk.Resource {
           Blackhole: props.blackhole,
           TransitGatewayAttachmentId: props.transitGatewayAttachmentId,
         },
+        owningAccountId: props.owningAccountId,
+        owningRegion: props.owningRegion,
+        roleName: props.roleName,
       },
     });
 

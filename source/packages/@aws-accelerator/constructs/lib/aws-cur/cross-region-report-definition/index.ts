@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -13,18 +13,23 @@
 
 import * as AWS from 'aws-sdk';
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent, Context } from '@aws-accelerator/utils/lib/common-types';
+import { getGlobalRegion } from '@aws-accelerator/utils/lib/common-functions';
 
 AWS.config.logger = console;
 
 /**
  * cross-region-report-definition - lambda handler
  *
- * @param event
+ * @param event, context
  * @returns
  */
 
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(
+  event: CloudFormationCustomResourceEvent,
+  context: Context,
+): Promise<
   | {
       PhysicalResourceId: string;
       Status: string;
@@ -46,8 +51,13 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
     BillingViewArn?: string;
   }
 
+  const partition = context.invokedFunctionArn.split(':')[1];
+
+  const globalRegion = getGlobalRegion(partition);
+
   const reportDefinition: ReportDefinition = event.ResourceProperties['reportDefinition'];
-  const curClient = new AWS.CUR({ region: 'us-east-1' });
+  const solutionId = process.env['SOLUTION_ID'];
+  const curClient = new AWS.CUR({ region: globalRegion, customUserAgent: solutionId });
 
   // Handle case where boolean is passed as string
   if (reportDefinition.RefreshClosedReports) {

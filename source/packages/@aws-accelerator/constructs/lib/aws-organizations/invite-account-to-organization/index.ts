@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -24,6 +24,8 @@ import {
 } from '@aws-sdk/client-organizations';
 import { DynamoDBDocumentClient, paginateQuery, DynamoDBDocumentPaginationConfiguration } from '@aws-sdk/lib-dynamodb';
 import { AssumeRoleCommand, STSClient } from '@aws-sdk/client-sts';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import { getGlobalRegion } from '@aws-accelerator/utils/lib/common-functions';
 
 const marshallOptions = {
   convertEmptyValues: false,
@@ -35,12 +37,9 @@ const unmarshallOptions = {
   wrapNumbers: false,
 };
 const translateConfig = { marshallOptions, unmarshallOptions };
-const dynamodbClient = new DynamoDBClient({});
-const documentClient = DynamoDBDocumentClient.from(dynamodbClient, translateConfig);
-const paginationConfig: DynamoDBDocumentPaginationConfiguration = {
-  client: documentClient,
-  pageSize: 100,
-};
+let dynamodbClient: DynamoDBClient;
+let documentClient: DynamoDBDocumentClient;
+let paginationConfig: DynamoDBDocumentPaginationConfiguration;
 
 type OrganizationIdentifier = {
   acceleratorKey: string;
@@ -60,7 +59,7 @@ type AccountDetails = Array<AccountDetail>;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       Status: string;
     }
@@ -70,13 +69,17 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   const commitId = event.ResourceProperties['commitId'];
   const assumeRoleName = event.ResourceProperties['assumeRoleName'];
   const partition = event.ResourceProperties['partition'];
+  const solutionId = process.env['SOLUTION_ID'];
+  const globalRegion = getGlobalRegion(partition);
 
-  let organizationsClient: OrganizationsClient;
-  if (partition === 'aws-us-gov') {
-    organizationsClient = new OrganizationsClient({ region: 'us-gov-west-1' });
-  } else {
-    organizationsClient = new OrganizationsClient({ region: 'us-east-1' });
-  }
+  dynamodbClient = new DynamoDBClient({ customUserAgent: solutionId });
+  documentClient = DynamoDBDocumentClient.from(dynamodbClient, translateConfig);
+  paginationConfig = {
+    client: documentClient,
+    pageSize: 100,
+  };
+
+  const organizationsClient = new OrganizationsClient({ customUserAgent: solutionId, region: globalRegion });
 
   if (partition !== 'aws-us-gov') {
     return {
@@ -157,6 +160,15 @@ async function inviteAccountToOu(
         sessionToken: assumeRoleResponse.Credentials?.SessionToken,
       },
       region: 'us-gov-west-1',
+    });
+  } else if (partition === 'aws-cn') {
+    acceptOrganizationsClient = new OrganizationsClient({
+      credentials: {
+        accessKeyId: assumeRoleResponse.Credentials?.AccessKeyId ?? '',
+        secretAccessKey: assumeRoleResponse.Credentials?.SecretAccessKey ?? '',
+        sessionToken: assumeRoleResponse.Credentials?.SessionToken,
+      },
+      region: 'cn-northwest-1',
     });
   } else {
     acceptOrganizationsClient = new OrganizationsClient({

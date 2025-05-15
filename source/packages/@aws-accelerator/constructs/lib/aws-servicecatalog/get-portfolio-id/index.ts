@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -17,10 +17,15 @@
  * @returns
  */
 
-import * as AWS from 'aws-sdk';
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { paginateListPortfolios, ServiceCatalogClient } from '@aws-sdk/client-service-catalog';
+import { setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+const serviceCatalogClient = new ServiceCatalogClient({
+  retryStrategy: setRetryStrategy(),
+  customUserAgent: process.env['SOLUTION_ID'],
+});
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -33,29 +38,9 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
-      const serviceCatalogClient = new AWS.ServiceCatalog();
-      let nextToken: string | undefined = undefined;
-      do {
-        const page = await throttlingBackOff(() =>
-          serviceCatalogClient.listPortfolios({ PageToken: nextToken }).promise(),
-        );
-        for (const portfolio of page.PortfolioDetails ?? []) {
-          if (portfolio.DisplayName === displayName && portfolio.ProviderName === providerName) {
-            const portfolioId = portfolio.Id;
-            if (portfolioId) {
-              console.log(portfolioId);
-              return {
-                PhysicalResourceId: portfolioId,
-                Status: 'SUCCESS',
-              };
-            }
-          }
-        }
-        nextToken = page.NextPageToken;
-      } while (nextToken);
-
+      const portfolioId = await getPortfolioId(serviceCatalogClient, displayName, providerName);
       return {
-        PhysicalResourceId: 'none',
+        PhysicalResourceId: portfolioId,
         Status: 'SUCCESS',
       };
     case 'Delete':
@@ -65,4 +50,24 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         Status: 'SUCCESS',
       };
   }
+}
+async function getPortfolioId(serviceCatalogClient: ServiceCatalogClient, displayName: string, providerName: string) {
+  const portfolios = [];
+  // get all portfolio id for specific provider and display name
+  for await (const page of paginateListPortfolios({ client: serviceCatalogClient }, {})) {
+    for (const portfolio of page.PortfolioDetails ?? []) {
+      if (portfolio.DisplayName === displayName && portfolio.ProviderName === providerName) {
+        portfolios.push(portfolio.Id);
+      }
+    }
+  }
+  // there are no portfolios in the account for that specified filter
+  if (portfolios.length === 0) {
+    throw new Error(`No portfolio ID was found for ${displayName} ${providerName} in the account`);
+  }
+  // this is to handle the case where there are multiple portfolios with the same display name and provider name
+  if (portfolios.length > 1) {
+    throw new Error(`Multiple portfolio IDs were found for ${displayName} ${providerName} in the account`);
+  }
+  return portfolios[0];
 }

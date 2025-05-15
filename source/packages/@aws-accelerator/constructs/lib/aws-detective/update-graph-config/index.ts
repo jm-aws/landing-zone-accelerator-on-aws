@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -17,13 +17,14 @@ import {
   ListMembersCommand,
   ListMembersCommandOutput,
 } from '@aws-sdk/client-detective';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 /**
  * DetectiveUpdateGraph - lambda handler
  *
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       Status: string | undefined;
       StatusCode: number | undefined;
@@ -31,7 +32,8 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   | undefined
 > {
   const region = event.ResourceProperties['region'];
-  const detectiveClient = new DetectiveClient({ region: region });
+  const solutionId = process.env['SOLUTION_ID'];
+  const detectiveClient = new DetectiveClient({ region: region, customUserAgent: solutionId });
   const graphArn = await getGraphArn(detectiveClient);
   let nextToken: string | undefined = undefined;
   do {

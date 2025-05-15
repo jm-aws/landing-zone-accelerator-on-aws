@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -14,6 +14,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { v4 as uuidv4 } from 'uuid';
 import { Construct } from 'constructs';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '../../utils/lib/lambda';
 import path = require('path');
 
 export interface DetachQuarantineScpProps {
@@ -21,9 +22,9 @@ export interface DetachQuarantineScpProps {
   readonly partition: string;
   readonly managementAccountId: string;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
@@ -46,7 +47,7 @@ export class DetachQuarantineScp extends Construct {
     //
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, DETACH_QUARANTINE_SCP_RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'lambdas/detach-quarantine-scp/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       timeout: cdk.Duration.minutes(15),
       policyStatements: [
         {

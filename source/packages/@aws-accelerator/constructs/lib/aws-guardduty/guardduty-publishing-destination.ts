@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,7 @@
  *  and limitations under the License.
  */
 
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
@@ -25,13 +26,21 @@ export interface GuardDutyPublishingDestinationProps {
    */
   readonly exportDestinationType: string;
   /**
-   * Publishing destination bucket arn
+   * Export destination type
    */
-  readonly bucketArn: string;
+  readonly exportDestinationOverride: boolean;
   /**
-   * Custom resource lambda log group encryption key
+   * Publishing destination arn
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly destinationArn: string;
+  /**
+   * Publishing destination bucket encryption key
+   */
+  readonly destinationKmsKey: cdk.aws_kms.IKey;
+  /**
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
+   */
+  readonly logKmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
@@ -51,7 +60,7 @@ export class GuardDutyPublishingDestination extends Construct {
 
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'create-publishing-destination/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       policyStatements: [
         {
           Sid: 'GuardDutyCreatePublishingDestinationCommandTaskGuardDutyActions',
@@ -60,11 +69,19 @@ export class GuardDutyPublishingDestination extends Construct {
             'guardDuty:CreateDetector',
             'guardDuty:CreatePublishingDestination',
             'guardDuty:DeletePublishingDestination',
+            'guardDuty:UpdatePublishingDestination',
             'guardDuty:ListDetectors',
             'guardDuty:ListPublishingDestinations',
+            'guardduty:DescribePublishingDestination',
             'iam:CreateServiceLinkedRole',
           ],
           Resource: '*',
+        },
+        {
+          Sid: 'GuardDutyCreateBucketPrefix',
+          Effect: 'Allow',
+          Action: ['s3:ListBucket', 's3:GetObject'],
+          Resource: [props.destinationArn, `${props.destinationArn}/*`],
         },
       ],
     });
@@ -73,10 +90,10 @@ export class GuardDutyPublishingDestination extends Construct {
       resourceType: RESOURCE_TYPE,
       serviceToken: provider.serviceToken,
       properties: {
-        region: cdk.Stack.of(this).region,
         exportDestinationType: props.exportDestinationType,
-        bucketArn: props.bucketArn,
-        kmsKeyArn: props.kmsKey.keyArn,
+        exportDestinationOverride: props.exportDestinationOverride,
+        destinationArn: props.destinationArn,
+        kmsKeyArn: props.destinationKmsKey.keyArn,
       },
     });
 
@@ -90,7 +107,7 @@ export class GuardDutyPublishingDestination extends Construct {
       new cdk.aws_logs.LogGroup(stack, `${provider.node.id}LogGroup`, {
         logGroupName: `/aws/lambda/${(provider.node.findChild('Handler') as cdk.aws_lambda.CfnFunction).ref}`,
         retention: props.logRetentionInDays,
-        encryptionKey: props.kmsKey,
+        encryptionKey: props.logKmsKey,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
     resource.node.addDependency(logGroup);

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,11 +12,12 @@
  */
 
 import { SNSClient, PublishCommand, PublishCommandInput } from '@aws-sdk/client-sns';
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
 
 const snsTopicArn: string = process.env['SNS_TOPIC_ARN'] ?? '';
+const solutionId: string = process.env['SOLUTION_ID'] ?? '';
 
-const snsClient = new SNSClient({});
+const snsClient = new SNSClient({ customUserAgent: solutionId });
 /**
  * control-tower-notification-forwarder - lambda handler
  *

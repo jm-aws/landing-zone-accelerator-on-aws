@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -14,8 +14,10 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 
 import { IpamAllocationConfig } from '@aws-accelerator/config';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 
 export interface IIpamSubnet extends cdk.IResource {
   /**
@@ -40,7 +42,15 @@ export interface IpamSubnetProps {
   /**
    * The availability zone (AZ) of the subnet
    */
-  readonly availabilityZone: string;
+  readonly availabilityZone?: string;
+
+  /**
+   * The Physical Availability Zone ID the subnet is located in
+   *
+   * @attribute
+   */
+  readonly availabilityZoneId?: string;
+
   /**
    * The base IPAM pool CIDR range the subnet is assigned to
    */
@@ -50,9 +60,9 @@ export interface IpamSubnetProps {
    */
   readonly ipamAllocation: IpamAllocationConfig;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
@@ -69,9 +79,95 @@ export interface IpamSubnetProps {
    * An array of tags for the subnet
    */
   readonly tags?: cdk.CfnTag[];
+  /**
+   * The outpost arn for the subnet
+   */
+  readonly outpostArn?: string;
+}
+
+export interface IpamSubnetLookupOptions {
+  readonly owningAccountId: string;
+  readonly ssmSubnetIdPath: string;
+  readonly roleName?: string;
+  readonly region?: string;
+  /**
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
+   */
+  readonly kmsKey?: cdk.aws_kms.IKey;
+  /**
+   * Custom resource lambda log retention in days
+   */
+  readonly logRetentionInDays: number;
 }
 
 export class IpamSubnet extends cdk.Resource implements IIpamSubnet {
+  public static fromLookup(scope: Construct, id: string, options: IpamSubnetLookupOptions): IIpamSubnet {
+    class Import extends cdk.Resource implements IIpamSubnet {
+      public readonly subnetId: string = options.ssmSubnetIdPath;
+      public readonly ipv4CidrBlock: string;
+
+      constructor(scope: Construct, id: string) {
+        super(scope, id);
+
+        const GET_IPAM_SUBNET_CIDR = 'Custom::GetIpamSubnetCidr';
+
+        const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, GET_IPAM_SUBNET_CIDR, {
+          codeDirectory: path.join(__dirname, 'get-ipam-subnet-cidr/dist'),
+          runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
+          policyStatements: [
+            {
+              Effect: 'Allow',
+              Action: ['sts:AssumeRole'],
+              Resource: '*',
+            },
+            {
+              Effect: 'Allow',
+              Action: ['ec2:DescribeSubnets', 'ssm:GetParameter'],
+              Resource: '*',
+            },
+          ],
+        });
+
+        // Construct role arn if this is a cross-account lookup
+        let roleArn: string | undefined = undefined;
+        if (options.roleName) {
+          roleArn = cdk.Stack.of(this).formatArn({
+            service: 'iam',
+            region: '',
+            account: options.owningAccountId,
+            resource: 'role',
+            arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+            resourceName: options.roleName,
+          });
+        }
+        const resource = new cdk.CustomResource(this, 'Resource', {
+          resourceType: GET_IPAM_SUBNET_CIDR,
+          serviceToken: provider.serviceToken,
+          properties: {
+            ssmSubnetIdPath: options.ssmSubnetIdPath,
+            region: options.region,
+            roleArn,
+            uuid: uuidv4(), // Generates a new UUID to force the resource to update
+          },
+        });
+
+        const stack = cdk.Stack.of(scope);
+        const logGroup =
+          (stack.node.tryFindChild(`${provider.node.id}LogGroup`) as cdk.aws_logs.LogGroup) ??
+          new cdk.aws_logs.LogGroup(stack, `${provider.node.id}LogGroup`, {
+            logGroupName: `/aws/lambda/${(provider.node.findChild('Handler') as cdk.aws_lambda.CfnFunction).ref}`,
+            retention: options.logRetentionInDays,
+            encryptionKey: options.kmsKey,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+          });
+        resource.node.addDependency(logGroup);
+
+        this.ipv4CidrBlock = resource.getAttString('ipv4CidrBlock');
+      }
+    }
+    return new Import(scope, id);
+  }
+
   public readonly ipv4CidrBlock: string;
   public readonly subnetId: string;
   private tags: { Key: string; Value: string }[] = [];
@@ -83,11 +179,11 @@ export class IpamSubnet extends cdk.Resource implements IIpamSubnet {
 
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, IPAM_SUBNET, {
       codeDirectory: path.join(__dirname, 'ipam-subnet/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       policyStatements: [
         {
           Effect: 'Allow',
-          Action: ['ec2:CreateTags', 'ec2:DeleteSubnet', 'ec2:ModifySubnetAttribute'],
+          Action: ['ec2:CreateTags', 'ec2:DeleteSubnet', 'ec2:DeleteTags', 'ec2:ModifySubnetAttribute'],
           Resource: `arn:${cdk.Aws.PARTITION}:ec2:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:subnet/*`,
         },
         {
@@ -122,11 +218,13 @@ export class IpamSubnet extends cdk.Resource implements IIpamSubnet {
       properties: {
         name: props.name,
         availabilityZone: props.availabilityZone,
+        availabilityZoneId: props.availabilityZoneId,
         basePool: props.basePool,
         ipamAllocation: props.ipamAllocation,
         vpcId: props.vpcId,
         mapPublicIpOnLaunch: props.mapPublicIpOnLaunch,
-        tags: this.tags,
+        tags: this.tags ?? [],
+        outpostArn: props.outpostArn,
       },
     });
 
@@ -134,7 +232,7 @@ export class IpamSubnet extends cdk.Resource implements IIpamSubnet {
     this.subnetId = resource.ref;
 
     /**
-     * Singleton pattern to define the log group for the singleton function
+     * Single pattern to define the log group for the singleton function
      * in the stack
      */
     const stack = cdk.Stack.of(scope);

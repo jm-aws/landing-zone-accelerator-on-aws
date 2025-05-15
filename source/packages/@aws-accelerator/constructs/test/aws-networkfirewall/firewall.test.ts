@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,10 @@
  *  and limitations under the License.
  */
 
+import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
-
 import { NetworkFirewall } from '../../lib/aws-networkfirewall/firewall';
+import { snapShotTest } from '../snapshot-test';
 
 const testNamePrefix = 'Construct(NetworkFirewall): ';
 
@@ -22,7 +23,45 @@ const stack = new cdk.Stack();
 
 const firewallPolicyArn = 'arn:aws:network-firewall:us-east-1:222222222222:firewall-policy/TestPolicy';
 
-new NetworkFirewall(stack, 'TestFirewall', {
+const importedFirewallArn = 'arn:aws:network-firewall:us-east-1:222222222222:firewall/TestImportedFirewall';
+
+const testFirewall = new NetworkFirewall(stack, 'TestFirewall', {
+  firewallPolicyArn: firewallPolicyArn,
+  name: 'TestFirewall',
+  subnets: ['Test-Subnet-1', 'Test-Subnet-2'],
+  vpcId: 'TestVpc',
+  tags: [],
+});
+const key = new cdk.aws_kms.Key(stack, 'CloudWatchKey', {});
+
+testFirewall.addNetworkFirewallRoute('testRouteId1', '1', 365, 'routeTableId', '10.0.0.6/32', undefined, key);
+testFirewall.addNetworkFirewallRoute('testRouteId2', '1', 365, 'routeTableId', undefined, '::1', key);
+
+const importedFirewall = NetworkFirewall.fromAttributes(stack, 'TestImportFirewall', {
+  firewallArn: importedFirewallArn,
+  firewallName: 'ImportedFirewallName',
+});
+importedFirewall.addLogging({
+  logDestinationConfigs: [
+    {
+      logDestinationType: 'CloudWatchLogs',
+      logDestination: {
+        logGroup: 'firewallAlertLogGroupArn',
+      },
+      logType: 'ALERT',
+    },
+  ],
+});
+
+importedFirewall.addNetworkFirewallRoute('endpointRouteId', '1', 365, 'routeTableId', '10.0.0.6/32', undefined, key);
+
+const app = new cdk.App();
+const includedStack = new cdk.Stack(app, `placeHolder`, {});
+const firewallStack = new cdk.cloudformation_include.CfnInclude(includedStack, 'IncludedStack', {
+  templateFile: path.join(__dirname, 'includedStacks/firewall-stack.json'),
+});
+
+NetworkFirewall.includedCfnResource(firewallStack, 'firewallLogicalId', {
   firewallPolicyArn: firewallPolicyArn,
   name: 'TestFirewall',
   subnets: ['Test-Subnet-1', 'Test-Subnet-2'],
@@ -34,42 +73,6 @@ new NetworkFirewall(stack, 'TestFirewall', {
  * Network Firewall construct test
  */
 describe('Network Firewall', () => {
-  /**
-   * Number of Network Firewalls test
-   */
-  test(`${testNamePrefix} Network firewall count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::NetworkFirewall::Firewall', 1);
-  });
-
-  /**
-   * Network firewall resource configuration test
-   */
-  test(`${testNamePrefix} Network firewall resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestFirewallE26FCA5C: {
-          Type: 'AWS::NetworkFirewall::Firewall',
-          Properties: {
-            FirewallName: 'TestFirewall',
-            FirewallPolicyArn: 'arn:aws:network-firewall:us-east-1:222222222222:firewall-policy/TestPolicy',
-            SubnetMappings: [
-              {
-                SubnetId: 'Test-Subnet-1',
-              },
-              {
-                SubnetId: 'Test-Subnet-2',
-              },
-            ],
-            VpcId: 'TestVpc',
-            Tags: [
-              {
-                Key: 'Name',
-                Value: 'TestFirewall',
-              },
-            ],
-          },
-        },
-      },
-    });
-  });
+  snapShotTest(testNamePrefix, stack);
+  snapShotTest(testNamePrefix, includedStack);
 });

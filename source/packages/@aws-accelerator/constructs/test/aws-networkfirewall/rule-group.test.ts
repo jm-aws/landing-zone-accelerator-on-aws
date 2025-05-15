@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,10 +12,10 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-
 import { NfwRuleGroupRuleConfig } from '@aws-accelerator/config';
-
 import { NetworkFirewallRuleGroup } from '../../lib/aws-networkfirewall/rule-group';
+import { snapShotTest } from '../snapshot-test';
+import { describe } from '@jest/globals';
 
 const testNamePrefix = 'Construct(NetworkFirewallPolicy): ';
 
@@ -46,6 +46,7 @@ const ruleGroup: NfwRuleGroupRuleConfig = {
     rulesSourceList: undefined,
     statelessRulesAndCustomActions: undefined,
     rulesString: undefined,
+    rulesFile: '../../accelerator/test/configs/snapshot-only/firewall-rules/rules.txt',
   },
   ruleVariables: undefined,
   statefulRuleOptions: 'STRICT_ORDER',
@@ -63,60 +64,84 @@ new NetworkFirewallRuleGroup(stack, 'TestGroup', {
  * Network Firewall construct test
  */
 describe('Network Firewall Rule Group', () => {
-  /**
-   * Number of Network Firewall Policy test
-   */
-  test(`${testNamePrefix} Network firewall rule group count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::NetworkFirewall::RuleGroup', 1);
-  });
+  snapShotTest(testNamePrefix, stack);
+});
 
-  /**
-   * Network firewall resource configuration test
-   */
-  test(`${testNamePrefix} Network firewall policy resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestGroupAF88660E: {
-          Type: 'AWS::NetworkFirewall::RuleGroup',
-          Properties: {
-            Capacity: 100,
-            RuleGroup: {
-              RulesSource: {
-                StatefulRules: [
-                  {
-                    Action: 'PASS',
-                    Header: {
-                      Destination: '10.0.0.0/16',
-                      DestinationPort: 'ANY',
-                      Direction: 'FORWARD',
-                      Protocol: 'IP',
-                      Source: '10.1.0.0/16',
-                      SourcePort: 'ANY',
-                    },
-                    RuleOptions: [
-                      {
-                        Keyword: 'sid',
-                        Settings: ['100'],
-                      },
-                    ],
-                  },
-                ],
-              },
-              StatefulRuleOptions: {
-                RuleOrder: 'STRICT_ORDER',
-              },
+const statelessRule: NfwRuleGroupRuleConfig = {
+  rulesSource: {
+    statelessRulesAndCustomActions: {
+      statelessRules: [
+        {
+          priority: 100,
+          ruleDefinition: {
+            actions: ['aws:pass'],
+            matchAttributes: {
+              protocols: undefined,
+              tcpFlags: undefined,
+              sources: ['10.1.0.0/16'],
+              sourcePorts: [
+                {
+                  fromPort: 1024,
+                  toPort: 65535,
+                },
+              ],
+              destinations: ['10.0.0.0/16'],
+              destinationPorts: [
+                {
+                  fromPort: 22,
+                  toPort: 22,
+                },
+              ],
             },
-            RuleGroupName: 'TestGroup',
-            Tags: [
-              {
-                Key: 'Name',
-                Value: 'TestGroup',
-              },
-            ],
-            Type: 'STATEFUL',
           },
         },
-      },
-    });
-  });
+      ],
+      customActions: [
+        {
+          actionDefinition: {
+            publishMetricAction: {
+              dimensions: ['CustomValue'],
+            },
+          },
+          actionName: 'CustomAction',
+        },
+      ],
+    },
+    rulesSourceList: undefined,
+    statefulRules: undefined,
+    rulesString: undefined,
+    rulesFile: '../../accelerator/test/configs/snapshot-only/firewall-rules/rules.txt',
+  },
+
+  ruleVariables: {
+    ipSets: {
+      name: 'HOME_NET',
+      definition: ['10.0.0.0/16'],
+    },
+    portSets: {
+      name: 'HOME_NET',
+      definition: ['80', '443'],
+    },
+  },
+
+  statefulRuleOptions: 'STRICT_ORDER',
+};
+
+new NetworkFirewallRuleGroup(stack, 'TestGroupStateless', {
+  name: 'TestGroupStateless',
+  capacity: 100,
+  type: 'STATELESS',
+  ruleGroup: statelessRule,
+  tags: [{ key: 'someKey', value: 'someValue' }],
+});
+
+NetworkFirewallRuleGroup.fromAttributes(stack, 'TestImportGroup', {
+  groupArn: 'importedGroupArn',
+  groupName: 'importedGroupName',
+});
+/*
+ * Network Firewall construct test
+ */
+describe('Network Firewall Rule Group Stateless', () => {
+  snapShotTest(testNamePrefix, stack);
 });

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,7 +11,8 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 import * as AWS from 'aws-sdk';
 AWS.config.logger = console;
 
@@ -21,7 +22,7 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       Status: string | undefined;
       StatusCode: number | undefined;
@@ -31,9 +32,10 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   const region = event.ResourceProperties['region'];
   const defaultReportsDestinationType = event.ResourceProperties['defaultReportsDestinationType'];
   const bucket = event.ResourceProperties['bucket'];
-  const kmsKeyArn = event.ResourceProperties['kmsKeyArn'];
+  const kmsKeyArn: string | undefined = event.ResourceProperties['kmsKeyArn'] ?? undefined;
+  const solutionId = process.env['SOLUTION_ID'];
 
-  const auditManagerClient = new AWS.AuditManager({ region: region });
+  const auditManagerClient = new AWS.AuditManager({ region: region, customUserAgent: solutionId });
 
   switch (event.RequestType) {
     case 'Create':

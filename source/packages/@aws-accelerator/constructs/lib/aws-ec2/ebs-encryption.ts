@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,7 @@
  *  and limitations under the License.
  */
 
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
@@ -25,9 +26,9 @@ export interface EbsVolumeEncryptionProps {
    */
   readonly ebsEncryptionKmsKey: cdk.aws_kms.IKey;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly logGroupKmsKey: cdk.aws_kms.Key;
+  readonly logGroupKmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
@@ -67,7 +68,7 @@ export class EbsDefaultEncryption extends Construct {
 
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, EBS_ENCRYPTION_TYPE, {
       codeDirectory: path.join(__dirname, 'ebs-default-encryption/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       policyStatements: iamPolicy,
     });
 
@@ -75,7 +76,7 @@ export class EbsDefaultEncryption extends Construct {
       resourceType: EBS_ENCRYPTION_TYPE,
       serviceToken: provider.serviceToken,
       properties: {
-        kmsKeyId: props.ebsEncryptionKmsKey?.keyId,
+        kmsKeyId: props.ebsEncryptionKmsKey.keyId,
       },
     });
 

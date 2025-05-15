@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,47 +11,35 @@
  *  and limitations under the License.
  */
 
-import * as assets from 'aws-cdk-lib/aws-s3-assets';
 import * as cdk from 'aws-cdk-lib';
-import { v4 as uuidv4 } from 'uuid';
+import * as assets from 'aws-cdk-lib/aws-s3-assets';
 import { Construct } from 'constructs';
+import * as path from 'path';
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import { createLogger } from '@aws-accelerator/utils/lib/logger';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 
-const path = require('path');
+const logger = createLogger(['constructs-organization-policy']);
 
 export enum PolicyType {
   AISERVICES_OPT_OUT_POLICY = 'AISERVICES_OPT_OUT_POLICY',
   BACKUP_POLICY = 'BACKUP_POLICY',
   SERVICE_CONTROL_POLICY = 'SERVICE_CONTROL_POLICY',
   TAG_POLICY = 'TAG_POLICY',
+  CHATBOT_POLICY = 'CHATBOT_POLICY',
 }
 
-/**
- * <p>A custom key-value pair associated with a resource within your organization.</p>
- *         <p>You can attach tags to any of the following organization resources.</p>
- *         <ul>
- *             <li>
- *                 <p>AWS account</p>
- *             </li>
- *             <li>
- *                 <p>Organizational unit (OU)</p>
- *             </li>
- *             <li>
- *                 <p>Organization root</p>
- *             </li>
- *             <li>
- *                 <p>Policy</p>
- *             </li>
- *          </ul>
- */
 export interface Tag {
   /**
-   * <p>The key identifier, or name, of the tag.</p>
+   * The key identifier, or name, of the tag.
    */
   Key: string | undefined;
 
   /**
-   * <p>The string value that's associated with the key of the tag. You can set the value of a
-   *             tag to an empty string, but you can't set the value of a tag to null.</p>
+   * The string value that's associated with the key of the tag. You can set the value of a
+   * tag to an empty string, but you can't set the value of a tag to null.
    */
   Value: string | undefined;
 }
@@ -60,21 +48,46 @@ export interface Tag {
  * Initialized Policy properties
  */
 export interface PolicyProps {
-  readonly path: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly type: PolicyType;
-  readonly tags?: Tag[];
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
+  /**
+   * The friendly name of the policy
+   */
+  readonly name: string;
+  /**
+   * The AWS partition the policy will be created in
+   */
+  readonly partition: string;
+  /**
+   * The path of the file for the policy
+   */
+  readonly path: string;
+  /**
+   * The type of policy to create
+   */
+  readonly type: PolicyType;
+  /**
+   * The SCP strategy - "allow-list" or "deny-list"The type of policy to create
+   */
+  readonly strategy?: string;
+  /**
+   * Accelerator prefix
+   */
   readonly acceleratorPrefix: string;
-  readonly managementAccountAccessRole: string;
+  /**
+   * An optional description of the policy
+   */
+  readonly description?: string;
+  /**
+   * An optional list of tags for the policy
+   */
+  readonly tags?: Tag[];
 }
 
 /**
@@ -86,6 +99,7 @@ export class Policy extends Construct {
   public readonly name: string;
   public readonly description?: string;
   public readonly type: PolicyType;
+  public readonly strategy?: string;
   public readonly tags?: Tag[];
 
   constructor(scope: Construct, id: string, props: PolicyProps) {
@@ -95,6 +109,7 @@ export class Policy extends Construct {
     this.name = props.name;
     this.description = props.description || '';
     this.type = props.type;
+    this.strategy = props.strategy;
     this.tags = props.tags || [];
 
     //
@@ -104,17 +119,41 @@ export class Policy extends Construct {
       path: props.path,
     });
 
+    let uuid: string;
+    // generating md5 hash to allow for file changes and only trigger change when file is updated
+    const fileHash = createHash('md5').update(readFileSync(props.path)).digest('hex');
+
+    // Boolean to force update
+    const forceUpdate = process.env['ACCELERATOR_FORCED_UPDATE']
+      ? process.env['ACCELERATOR_FORCED_UPDATE'] === 'true'
+      : false;
+
+    if (forceUpdate) {
+      logger.warn(`ACCELERATOR_FORCED_UPDATE env variable is set. Forcing an update.`);
+      uuid = uuidv4();
+    } else {
+      uuid = fileHash;
+    }
+
     //
     // Function definition for the custom resource
     //
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, 'Custom::OrganizationsCreatePolicy', {
       codeDirectory: path.join(__dirname, 'create-policy/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       description: 'Organizations create policy',
       policyStatements: [
         {
           Effect: 'Allow',
-          Action: ['organizations:CreatePolicy', 'organizations:ListPolicies', 'organizations:UpdatePolicy'],
+          Action: [
+            'organizations:CreatePolicy',
+            'organizations:DeletePolicy',
+            'organizations:DetachPolicy',
+            'organizations:ListPolicies',
+            'organizations:ListTargetsForPolicy',
+            'organizations:UpdatePolicy',
+            'organizations:TagResource',
+          ],
           Resource: '*',
         },
         {
@@ -143,14 +182,13 @@ export class Policy extends Construct {
       properties: {
         bucket: asset.s3BucketName,
         key: asset.s3ObjectKey,
-        partition: cdk.Aws.PARTITION,
-        acceleratorPrefix: props.acceleratorPrefix,
-        managementAccountAccessRole: props.managementAccountAccessRole,
-        uuid: uuidv4(),
-        path: props.path,
+        partition: props.partition,
+        policyTagKey: `${props.acceleratorPrefix}Managed`,
+        uuid,
         name: props.name,
         description: props.description,
         type: props.type,
+        strategy: props.strategy,
         tags: props.tags,
       },
     });

@@ -109,6 +109,33 @@ create_template_json()
         mv -- "$f" "${f%.template.json}.template"
     done
 }
+create_template_installer_json()
+{
+    # Run 'cdk synth' to generate raw solution outputs
+    do_cmd yarn run cdk synth --output=$staging_dist_dir --context use-permission-boundary=true
+    do_cmd find $staging_dist_dir -name '*InstallerStack.template.json' -exec mv {} {}-CustomBp.template.json \;
+
+    do_cmd yarn run cdk synth --output=$staging_dist_dir --context use-external-pipeline-account=true
+    do_cmd find $staging_dist_dir -name '*InstallerStack.template.json' -exec mv {} {}-ExternalPipeline.template.json \;
+
+    do_cmd yarn run cdk synth --output=$staging_dist_dir
+    # Remove unnecessary output files
+    do_cmd cd $staging_dist_dir
+    # ignore return code - can be non-zero if any of these does not exist
+    rm tree.json manifest.json cdk.out
+
+    # Move outputs from staging to template_dist_dir
+    echo "Move outputs from staging to template_dist_dir"
+    do_cmd mv $staging_dist_dir/*.template.json $template_dist_dir/
+
+    # Rename all *.template.json files to *.template
+    echo "Rename all *.template.json*.template.json to **.template"
+    echo "copy templates and rename"
+    for f in $template_dist_dir/*.template.json*.template.json; do
+        newname=$(echo "$f" | sed -E 's/\.template\.json-/-/; s/\.json$//')
+        mv -- "$f" "$newname"
+    done
+}
 
 create_template_yaml()
 {
@@ -237,6 +264,7 @@ template_dist_dir="$template_dir/global-s3-assets"
 build_dist_dir="$template_dir/regional-s3-assets"
 source_dir="$template_dir/../source"
 installer_dir="$source_dir/packages/@aws-accelerator/installer"
+govcloud_vending_dir="$source_dir/packages/@aws-accelerator/govcloud-account-vending"
 
 echo "------------------------------------------------------------------------------"
 echo "${bold}[Init] Remove any old dist files from previous runs${normal}"
@@ -263,15 +291,10 @@ echo "--------------------------------------------------------------------------
 
 do_cmd cd $source_dir
 
-# Install the global lerna package
-# Note: do not install using global (-g) option. This makes build-s3-dist.sh difficult
-# for customers and developers to use, as it globally changes their environment.
-do_cmd yarn add lerna@5.1.8 -W
-
 # Add local install to PATH
 export PATH=$(yarn bin):$PATH
 
-do_cmd yarn lerna bootstrap
+do_cmd yarn install
 do_cmd yarn build          # build javascript from typescript to validate the code
                            # cdk synth doesn't always detect issues in the typescript
                            # and may succeed using old build files. This ensures we
@@ -284,6 +307,9 @@ echo "--------------------------------------------------------------------------
 
 if fn_exists create_template_${template_format}; then
     do_cmd cd $installer_dir
+    create_template_installer_${template_format}
+    do_cmd cd $source_dir
+    do_cmd cd $govcloud_vending_dir
     create_template_${template_format}
     do_cmd cd $source_dir
 else
@@ -312,6 +338,7 @@ cd $template_dist_dir
 do_replace "*.template" %%BUCKET_NAME%% ${SOLUTION_BUCKET}
 do_replace "*.template" %%SOLUTION_NAME%% ${SOLUTION_TRADEMARKEDNAME}
 do_replace "*.template" %%VERSION%% ${SOLUTION_VERSION}
+do_replace "*.template" %%PRODUCT_BUCKET%% ${TEMPLATE_OUTPUT_BUCKET}
 
 echo "------------------------------------------------------------------------------"
 echo "${bold}[Packing] Source code artifacts${normal}"

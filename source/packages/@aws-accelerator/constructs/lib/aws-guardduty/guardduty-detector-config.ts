@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,7 @@
  *  and limitations under the License.
  */
 
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
@@ -28,25 +29,45 @@ export enum GuardDutyExportConfigDestinationTypes {
  */
 export interface GuardDutyDetectorConfigProps {
   /**
-   * Export config enable flag
+   * S3 Protection
    */
-  readonly isExportConfigEnable: boolean;
+  readonly enableS3Protection: boolean;
   /**
-   * Export config destination type, example s3
+   * EKS Protection
    */
-  readonly exportDestination: string;
+  readonly enableEksProtection: boolean;
   /**
-   * FindingPublishingFrequency
+   * EKS agent
    */
-  readonly exportFrequency: string;
+  readonly enableEksAgent: boolean;
   /**
-   * Custom resource lambda log group encryption key
+   * Malware Protection
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly enableEc2MalwareProtection: boolean;
+  /**
+   * Malware Protection Snapshots retention
+   */
+  readonly keepMalwareProtectionSnapshosts: boolean;
+  /**
+   * RDS Protection
+   */
+  readonly enableRdsProtection: boolean;
+  /**
+   * Lambda Protection
+   */
+  readonly enableLambdaProtection: boolean;
+  /**
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
+   */
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
+  /**
+   * FindingPublishingFrequency
+   */
+  readonly exportFrequency?: string;
 }
 
 /**
@@ -63,7 +84,8 @@ export class GuardDutyDetectorConfig extends Construct {
 
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'update-detector-config/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
+      memorySize: cdk.Size.mebibytes(512),
       policyStatements: [
         {
           Sid: 'GuardDutyUpdateDetectorTaskGuardDutyActions',
@@ -73,6 +95,7 @@ export class GuardDutyDetectorConfig extends Construct {
             'guardduty:ListMembers',
             'guardduty:UpdateDetector',
             'guardduty:UpdateMemberDetectors',
+            'guardduty:UpdateMalwareScanSettings',
           ],
           Resource: '*',
         },
@@ -83,10 +106,13 @@ export class GuardDutyDetectorConfig extends Construct {
       resourceType: RESOURCE_TYPE,
       serviceToken: provider.serviceToken,
       properties: {
-        region: cdk.Stack.of(this).region,
-        isExportConfigEnable: props.isExportConfigEnable,
-        exportDestination: props.exportDestination,
         exportFrequency: props.exportFrequency,
+        enableS3Protection: props.enableS3Protection,
+        enableEksProtection: props.enableEksProtection,
+        enableEksAgent: props.enableEksAgent,
+        enableEc2Protection: props.enableEc2MalwareProtection,
+        enableRdsProtection: props.enableRdsProtection,
+        enableLambdaProtection: props.enableLambdaProtection,
       },
     });
 

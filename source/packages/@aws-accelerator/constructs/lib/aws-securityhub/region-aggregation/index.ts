@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,17 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
+import { setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import {
+  CreateFindingAggregatorCommand,
+  DeleteFindingAggregatorCommand,
+  FindingAggregator,
+  paginateListFindingAggregators,
+  SecurityHubClient,
+  UpdateFindingAggregatorCommand,
+} from '@aws-sdk/client-securityhub';
 
 /**
  * SecurityHubRegionAggregation - lambda handler
@@ -21,7 +29,7 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       Status: string | undefined;
       StatusCode: number | undefined;
@@ -29,15 +37,30 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   | undefined
 > {
   const region = event.ResourceProperties['region'];
+  const solutionId = process.env['SOLUTION_ID'];
 
-  const securityHubClient = new AWS.SecurityHub({ region: region });
+  const client = new SecurityHubClient({
+    region: region,
+    customUserAgent: solutionId,
+    retryStrategy: setRetryStrategy(),
+  });
 
   // check if existing finding aggregator exists
-  const result = await throttlingBackOff(() => securityHubClient.listFindingAggregators({}).promise());
+  const findingAggregators: FindingAggregator[] = [];
+  const paginator = paginateListFindingAggregators({ client }, {});
 
-  let findingAggregatorArn = '';
-  if (result['FindingAggregators']!.length > 0)
-    findingAggregatorArn = result['FindingAggregators']![0]['FindingAggregatorArn']!;
+  for await (const page of paginator) {
+    if (page.FindingAggregators) {
+      findingAggregators.push(...page.FindingAggregators);
+    }
+  }
+
+  let findingAggregatorArn: string | undefined;
+  for (const findingAggregator of findingAggregators) {
+    if (findingAggregator.FindingAggregatorArn) {
+      findingAggregatorArn = findingAggregator.FindingAggregatorArn;
+    }
+  }
 
   switch (event.RequestType) {
     case 'Create':
@@ -45,12 +68,12 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
       if (findingAggregatorArn) {
         console.log('Existing Finding Aggregator found, skipping creation', findingAggregatorArn);
       } else {
-        console.log('Enable Finding Aggreggation');
+        console.log('Enable Finding Aggregation');
         try {
           await throttlingBackOff(() =>
-            securityHubClient.createFindingAggregator({ RegionLinkingMode: 'ALL_REGIONS' }).promise(),
+            client.send(new CreateFindingAggregatorCommand({ RegionLinkingMode: 'ALL_REGIONS' })),
           );
-        } catch (error) {
+        } catch (error: unknown) {
           console.log(error);
           return { Status: 'Failure', StatusCode: 400 };
         }
@@ -60,14 +83,14 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
       console.log('Update Finding Aggregator Arn', findingAggregatorArn);
       try {
         await throttlingBackOff(() =>
-          securityHubClient
-            .updateFindingAggregator({
+          client.send(
+            new UpdateFindingAggregatorCommand({
               FindingAggregatorArn: findingAggregatorArn,
               RegionLinkingMode: 'ALL_REGIONS',
-            })
-            .promise(),
+            }),
+          ),
         );
-      } catch (error) {
+      } catch (error: unknown) {
         console.log(error);
         return { Status: 'Failure', StatusCode: 400 };
       }
@@ -77,7 +100,7 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
       console.log('Delete Finding Aggregator Arn', findingAggregatorArn);
       try {
         await throttlingBackOff(() =>
-          securityHubClient.deleteFindingAggregator({ FindingAggregatorArn: findingAggregatorArn }).promise(),
+          client.send(new DeleteFindingAggregatorCommand({ FindingAggregatorArn: findingAggregatorArn })),
         );
       } catch (error) {
         console.log(error);

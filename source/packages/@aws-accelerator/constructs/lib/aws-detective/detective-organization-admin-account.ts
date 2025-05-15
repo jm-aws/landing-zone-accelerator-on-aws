@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -13,6 +13,8 @@
 
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { PolicyStatementType } from '@aws-accelerator/utils/lib/common-resources';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 
 const path = require('path');
 
@@ -25,14 +27,64 @@ export interface DetectiveOrganizationalAdminAccountProps {
    */
   readonly adminAccountId: string;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
 }
+
+export const DetectiveEnableOrganizationAdminAccountPolicyStatements: PolicyStatementType[] = [
+  {
+    Sid: 'DetectiveEnableOrganizationAdminAccountTaskOrganizationActions',
+    Effect: 'Allow',
+    Action: [
+      'organizations:DeregisterDelegatedAdministrator',
+      'organizations:DescribeOrganization',
+      'organizations:EnableAWSServiceAccess',
+      'organizations:ListAWSServiceAccessForOrganization',
+      'organizations:ListAccounts',
+      'organizations:ListDelegatedAdministrators',
+      'organizations:RegisterDelegatedAdministrator',
+      'organizations:ServicePrincipal',
+      'organizations:UpdateOrganizationConfiguration',
+    ],
+    Resource: '*',
+    Condition: {
+      StringLikeIfExists: {
+        'organizations:DeregisterDelegatedAdministrator': ['detective.amazonaws.com'],
+        'organizations:DescribeOrganization': ['detective.amazonaws.com'],
+        'organizations:EnableAWSServiceAccess': ['detective.amazonaws.com'],
+        'organizations:ListAWSServiceAccessForOrganization': ['detective.amazonaws.com'],
+        'organizations:ListAccounts': ['detective.amazonaws.com'],
+        'organizations:ListDelegatedAdministrators': ['detective.amazonaws.com'],
+        'organizations:RegisterDelegatedAdministrator': ['detective.amazonaws.com'],
+        'organizations:ServicePrincipal': ['detective.amazonaws.com'],
+        'organizations:UpdateOrganizationConfiguration': ['detective.amazonaws.com'],
+      },
+    },
+  },
+  {
+    Sid: 'DetectiveEnableOrganizationAdminAccountTaskDetectiveActions',
+    Effect: 'Allow',
+    Action: [
+      'detective:EnableOrganizationAdminAccount',
+      'detective:ListOrganizationAdminAccounts',
+      'detective:DisableOrganizationAdminAccount',
+      'detective:EnableOrganizationAdminAccount',
+      'detective:ListOrganizationAdminAccount',
+    ],
+    Resource: '*',
+  },
+  {
+    Sid: 'ServiceLinkedRoleDetective',
+    Effect: 'Allow',
+    Action: ['iam:CreateServiceLinkedRole'],
+    Resource: ['*'],
+  },
+];
 
 /**
  * Class for DetectiveOrganizationAdminAccount
@@ -47,56 +99,8 @@ export class DetectiveOrganizationAdminAccount extends Construct {
 
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'enable-organization-admin-account/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
-      policyStatements: [
-        {
-          Sid: 'DetectiveEnableOrganizationAdminAccountTaskOrganizationActions',
-          Effect: 'Allow',
-          Action: [
-            'organizations:DeregisterDelegatedAdministrator',
-            'organizations:DescribeOrganization',
-            'organizations:EnableAWSServiceAccess',
-            'organizations:ListAWSServiceAccessForOrganization',
-            'organizations:ListAccounts',
-            'organizations:ListDelegatedAdministrators',
-            'organizations:RegisterDelegatedAdministrator',
-            'organizations:ServicePrincipal',
-            'organizations:UpdateOrganizationConfiguration',
-          ],
-          Resource: '*',
-          Condition: {
-            StringLikeIfExists: {
-              'organizations:DeregisterDelegatedAdministrator': ['detective.amazonaws.com'],
-              'organizations:DescribeOrganization': ['detective.amazonaws.com'],
-              'organizations:EnableAWSServiceAccess': ['detective.amazonaws.com'],
-              'organizations:ListAWSServiceAccessForOrganization': ['detective.amazonaws.com'],
-              'organizations:ListAccounts': ['detective.amazonaws.com'],
-              'organizations:ListDelegatedAdministrators': ['detective.amazonaws.com'],
-              'organizations:RegisterDelegatedAdministrator': ['detective.amazonaws.com'],
-              'organizations:ServicePrincipal': ['detective.amazonaws.com'],
-              'organizations:UpdateOrganizationConfiguration': ['detective.amazonaws.com'],
-            },
-          },
-        },
-        {
-          Sid: 'DetectiveEnableOrganizationAdminAccountTaskDetectiveActions',
-          Effect: 'Allow',
-          Action: [
-            'detective:EnableOrganizationAdminAccount',
-            'detective:ListOrganizationAdminAccounts',
-            'detective:DisableOrganizationAdminAccount',
-            'detective:EnableOrganizationAdminAccount',
-            'detective:ListOrganizationAdminAccount',
-          ],
-          Resource: '*',
-        },
-        {
-          Sid: 'ServiceLinkedRoleDetective',
-          Effect: 'Allow',
-          Action: ['iam:CreateServiceLinkedRole'],
-          Resource: ['*'],
-        },
-      ],
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
+      policyStatements: DetectiveEnableOrganizationAdminAccountPolicyStatements,
     });
 
     const resource = new cdk.CustomResource(this, 'Resource', {

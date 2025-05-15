@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,6 +11,7 @@
  *  and limitations under the License.
  */
 
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
@@ -25,13 +26,25 @@ export interface GuardDutyMembersProps {
    */
   readonly enableS3Protection: boolean;
   /**
-   * Custom resource lambda log group encryption key
+   * EKS Protection enable flag
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly enableEksProtection: boolean;
+  /**
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
+   */
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
+  /**
+   * List of GuardDuty member accountIds populated only when deploymentTargets are defined
+   */
+  readonly guardDutyMemberAccountIds: string[];
+  /**
+   * Enable/disable autoEnableOrgMembers
+   */
+  readonly autoEnableOrgMembers: boolean;
 }
 
 /**
@@ -46,9 +59,11 @@ export class GuardDutyMembers extends Construct {
 
     const RESOURCE_TYPE = 'Custom::GuardDutyCreateMembers';
 
+    const servicePrincipal = 'guardduty.amazonaws.com';
+
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'create-members/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       policyStatements: [
         {
           Sid: 'GuardDutyCreateMembersTaskOrganizationAction',
@@ -57,7 +72,7 @@ export class GuardDutyMembers extends Construct {
           Resource: '*',
           Condition: {
             StringLikeIfExists: {
-              'organizations:ListAccounts': ['guardduty.amazonaws.com'],
+              'organizations:ListAccounts': [servicePrincipal],
             },
           },
         },
@@ -80,7 +95,7 @@ export class GuardDutyMembers extends Construct {
           Sid: 'ServiceLinkedRoleSecurityHub',
           Effect: 'Allow',
           Action: ['iam:CreateServiceLinkedRole'],
-          Resource: ['*'],
+          Resource: '*',
         },
       ],
     });
@@ -92,6 +107,9 @@ export class GuardDutyMembers extends Construct {
         region: cdk.Stack.of(this).region,
         partition: cdk.Aws.PARTITION,
         enableS3Protection: props.enableS3Protection,
+        enableEksProtection: props.enableEksProtection,
+        guardDutyMemberAccountIds: props.guardDutyMemberAccountIds,
+        autoEnableOrgMembers: props.autoEnableOrgMembers,
       },
     });
 

@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,313 +12,235 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-import { NagSuppressions } from 'cdk-nag';
-import { pascalCase } from 'change-case';
 import { Construct } from 'constructs';
-import * as path from 'path';
-
-import * as iam from 'aws-cdk-lib/aws-iam';
-import { EnablePolicyType, Policy, PolicyAttachment, PolicyType, PolicyTypeEnum } from '@aws-accelerator/constructs';
-
-import { Logger } from '../logger';
-import { AcceleratorStack, AcceleratorStackProps } from './accelerator-stack';
-import { PrepareStack } from './prepare-stack';
+import { MoveAccountRule, OptInRegions } from '@aws-accelerator/constructs';
+import { AcceleratorStack, AcceleratorStackProps, NagSuppressionRuleIds } from './accelerator-stack';
+import { ScpResource } from '../resources/scp-resource';
+import { KmsKeyResource } from '../resources/kms-key-resource';
 
 export interface AccountsStackProps extends AcceleratorStackProps {
   readonly configDirPath: string;
 }
 
-let key: cdk.aws_kms.Key;
 export class AccountsStack extends AcceleratorStack {
+  private keyResource: KmsKeyResource;
+
   constructor(scope: Construct, id: string, props: AccountsStackProps) {
     super(scope, id, props);
 
-    Logger.debug(`[accounts-stack] Region: ${cdk.Stack.of(this).region}`);
+    this.keyResource = new KmsKeyResource(this, props);
 
-    let globalRegion = 'us-east-1';
-    if (props.partition === 'aws-us-gov') {
-      globalRegion = 'us-gov-west-1';
+    if (props.globalConfig.enableOptInRegions) {
+      this.enableOptInRegions(props);
     }
 
-    // Use existing management account key if in the home region
-    // otherwise create new kms key
-    if (props.globalConfig.homeRegion == cdk.Stack.of(this).region) {
-      const keyArn = cdk.aws_ssm.StringParameter.valueForStringParameter(
-        this,
-        PrepareStack.MANAGEMENT_KEY_ARN_PARAMETER_NAME,
-      );
-      key = cdk.aws_kms.Key.fromKeyArn(this, 'ManagementKey', keyArn) as cdk.aws_kms.Key;
-    } else {
-      key = new cdk.aws_kms.Key(this, 'ManagementKey', {
-        alias: 'alias/accelerator/management/kms/key',
-        description: 'AWS Accelerator Management Account Kms Key',
-        enableKeyRotation: true,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-      });
-
-      // Adding Backups to the permitted services for vaults
-      const allowedServicePrincipals: { name: string; principal: string }[] = [
-        { name: 'Backup', principal: 'backup.amazonaws.com' },
-      ];
-
-      allowedServicePrincipals.forEach(item => {
-        key.addToResourcePolicy(
-          new cdk.aws_iam.PolicyStatement({
-            sid: `Allow ${item.name} service to use the encryption key`,
-            principals: [new cdk.aws_iam.ServicePrincipal(item.principal)],
-            actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
-            resources: ['*'],
-          }),
-        );
-      });
-
-      // Allow Accelerator Role to use the encryption key
-      key.addToResourcePolicy(
-        new cdk.aws_iam.PolicyStatement({
-          sid: `Allow Accelerator Role in this account to use the encryption key`,
-          principals: [new cdk.aws_iam.AnyPrincipal()],
-          actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
-          resources: ['*'],
-          conditions: {
-            ArnLike: {
-              'aws:PrincipalARN': [
-                `arn:${cdk.Stack.of(this).partition}:iam::${cdk.Stack.of(this).account}:role/AWSAccelerator-*`,
-              ],
-            },
-          },
-        }),
-      );
-
-      // Allow Cloudwatch logs to use the encryption key
-      key.addToResourcePolicy(
-        new cdk.aws_iam.PolicyStatement({
-          sid: `Allow Cloudwatch logs to use the encryption key`,
-          principals: [new cdk.aws_iam.ServicePrincipal(`logs.${cdk.Stack.of(this).region}.amazonaws.com`)],
-          actions: ['kms:Encrypt*', 'kms:Decrypt*', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:Describe*'],
-          resources: ['*'],
-          conditions: {
-            ArnLike: {
-              'kms:EncryptionContext:aws:logs:arn': `arn:${cdk.Stack.of(this).partition}:logs:${
-                cdk.Stack.of(this).region
-              }:${cdk.Stack.of(this).account}:log-group:*`,
-            },
-          },
-        }),
-      );
-
-      new cdk.aws_ssm.StringParameter(this, 'AcceleratorManagementKmsArnParameter', {
-        parameterName: PrepareStack.MANAGEMENT_KEY_ARN_PARAMETER_NAME,
-        stringValue: key.keyArn,
-      });
-    }
+    //
+    // Create MoveAccountRule
+    //
+    this.createMoveAccountRule(props);
 
     //
     // Global Organizations actions
     //
-    if (globalRegion === cdk.Stack.of(this).region) {
-      if (props.organizationConfig.enable) {
-        const enablePolicyTypeScp = new EnablePolicyType(this, 'enablePolicyTypeScp', {
-          policyType: PolicyTypeEnum.SERVICE_CONTROL_POLICY,
-          kmsKey: key,
+    if (props.globalRegion === cdk.Stack.of(this).region) {
+      //
+      // Create and attach scps
+      //
+      const scpResource = new ScpResource(this, this.keyResource.cloudwatchKey, this.keyResource.lambdaKey, props);
+      const scpItems = scpResource.createAndAttachScps(props);
+
+      //
+      // Create Access Analyzer Service Linked Role
+      //
+      this.createAccessAnalyzerServiceLinkedRole({
+        cloudwatch: this.keyResource.cloudwatchKey,
+        lambda: this.keyResource.lambdaKey,
+      });
+
+      //
+      // Create Config Service Linked Role
+      //
+      this.createConfigServiceLinkedRole({
+        cloudwatch: this.keyResource.cloudwatchKey,
+        lambda: this.keyResource.lambdaKey,
+      });
+
+      //
+      // Create Access GuardDuty Service Linked Role
+      //
+      this.createGuardDutyServiceLinkedRole({
+        cloudwatch: this.keyResource.cloudwatchKey,
+        lambda: this.keyResource.lambdaKey,
+      });
+
+      //
+      // Create Access SecurityHub Service Linked Role
+      //
+      this.createSecurityHubServiceLinkedRole({
+        cloudwatch: this.keyResource.cloudwatchKey,
+        lambda: this.keyResource.lambdaKey,
+      });
+
+      //
+      // Create Access Macie Service Linked Role
+      //
+      this.createMacieServiceLinkedRole({
+        cloudwatch: this.keyResource.cloudwatchKey,
+        lambda: this.keyResource.lambdaKey,
+      });
+
+      //
+      // Configure and attach quarantine scp
+      //
+      scpResource.configureAndAttachQuarantineScp(scpItems, props);
+
+      //
+      // End of Stack functionality
+      //
+      this.logger.debug(`Stack synthesis complete`);
+    }
+
+    //
+    // Create SSM parameters
+    //
+    this.createSsmParameters();
+
+    //
+    // Create NagSuppressions
+    //
+    this.addResourceSuppressionsByPath();
+
+    this.logger.info('Completed stack synthesis');
+  }
+
+  /**
+   * Function to create MoveAccountRule
+   * @param props {@link AccountsStackProps}
+   * @returns MoveAccountRule | undefined
+   *
+   * @remarks
+   * Create MoveAccountRule only in global region for ControlTower and Organization is enabled.
+   */
+  private createMoveAccountRule(props: AccountsStackProps): MoveAccountRule | undefined {
+    let moveAccountRule: MoveAccountRule | undefined;
+    if (props.globalRegion === cdk.Stack.of(this).region) {
+      if (props.organizationConfig.enable && !props.globalConfig.controlTower.enable) {
+        moveAccountRule = new MoveAccountRule(this, 'MoveAccountRule', {
+          globalRegion: props.globalRegion,
+          homeRegion: props.globalConfig.homeRegion,
+          moveAccountRoleName: this.acceleratorResourceNames.roles.moveAccountConfig,
+          commitId: props.configCommitId ?? '',
+          acceleratorPrefix: props.prefixes.accelerator,
+          configTableNameParameterName: this.acceleratorResourceNames.parameters.configTableName,
+          configTableArnParameterName: this.acceleratorResourceNames.parameters.configTableArn,
+          kmsKey: this.keyResource.cloudwatchKey,
           logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
         });
 
-        // Deploy SCPs
-        let quarantineScpId = '';
-        for (const serviceControlPolicy of props.organizationConfig.serviceControlPolicies) {
-          Logger.info(`[accounts-stack] Adding service control policy (${serviceControlPolicy.name})`);
-
-          const scp = new Policy(this, serviceControlPolicy.name, {
-            description: serviceControlPolicy.description,
-            name: serviceControlPolicy.name,
-            path: path.join(props.configDirPath, serviceControlPolicy.policy),
-            type: PolicyType.SERVICE_CONTROL_POLICY,
-            kmsKey: key,
-            logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
-            acceleratorPrefix: 'AWSAccelerator',
-            managementAccountAccessRole: props.globalConfig.managementAccountAccessRole,
-          });
-          scp.node.addDependency(enablePolicyTypeScp);
-
-          if (
-            serviceControlPolicy.name == props.organizationConfig.quarantineNewAccounts?.scpPolicyName &&
-            props.partition == 'aws'
-          ) {
-            new cdk.aws_ssm.StringParameter(this, pascalCase(`SsmParam${scp.name}ScpPolicyId`), {
-              parameterName: `/accelerator/organizations/scp/${scp.name}/id`,
-              stringValue: scp.id,
-            });
-            quarantineScpId = scp.id;
-          }
-
-          for (const organizationalUnit of serviceControlPolicy.deploymentTargets.organizationalUnits ?? []) {
-            Logger.info(
-              `[accounts-stack] Attaching service control policy (${serviceControlPolicy.name}) to organizational unit (${organizationalUnit})`,
-            );
-
-            new PolicyAttachment(this, pascalCase(`Attach_${scp.name}_${organizationalUnit}`), {
-              policyId: scp.id,
-              targetId: props.organizationConfig.getOrganizationalUnitId(organizationalUnit),
-              type: PolicyType.SERVICE_CONTROL_POLICY,
-              kmsKey: key,
-              logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
-            });
-          }
-
-          for (const account of serviceControlPolicy.deploymentTargets.accounts ?? []) {
-            new PolicyAttachment(this, pascalCase(`Attach_${scp.name}_${account}`), {
-              policyId: scp.id,
-              targetId: props.accountsConfig.getAccountId(account),
-              type: PolicyType.SERVICE_CONTROL_POLICY,
-              kmsKey: key,
-              logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
-            });
-          }
-        }
-
-        if (props.securityConfig.accessAnalyzer.enable) {
-          Logger.debug('[accounts-stack] Enable Service Access for access-analyzer.amazonaws.com');
-          new iam.CfnServiceLinkedRole(this, 'AccessAnalyzerServiceLinkedRole', {
-            awsServiceName: 'access-analyzer.amazonaws.com',
-          });
-        }
-
-        if (props.securityConfig.centralSecurityServices.guardduty.enable) {
-          Logger.debug('[accounts-stack] Enable Service Access for guardduty.amazonaws.com');
-          new iam.CfnServiceLinkedRole(this, 'GuardDutyServiceLinkedRole', {
-            awsServiceName: 'guardduty.amazonaws.com',
-            description: 'A service-linked role required for Amazon GuardDuty to access your resources. ',
-          });
-        }
-
-        if (props.securityConfig.centralSecurityServices.securityHub.enable) {
-          Logger.debug('[accounts-stack] Enable Service Access for securityhub.amazonaws.com');
-          new iam.CfnServiceLinkedRole(this, 'SecurityHubServiceLinkedRole', {
-            awsServiceName: 'securityhub.amazonaws.com',
-            description: 'A service-linked role required for AWS Security Hub to access your resources.',
-          });
-        }
-
-        if (props.securityConfig.centralSecurityServices.macie.enable) {
-          Logger.debug('[accounts-stack] Enable Service Access for macie.amazonaws.com');
-          new iam.CfnServiceLinkedRole(this, 'MacieServiceLinkedRole', {
-            awsServiceName: 'macie.amazonaws.com',
-          });
-        }
-
-        if (props.organizationConfig.quarantineNewAccounts?.enable === true && props.partition == 'aws') {
-          // Create resources to attach quarantine scp to
-          // new accounts created in organizations
-          Logger.info(`[accounts-stack] Creating resources to quarantine new accounts`);
-          const orgPolicyRead = new cdk.aws_iam.PolicyStatement({
-            sid: 'OrgRead',
-            effect: cdk.aws_iam.Effect.ALLOW,
-            actions: ['organizations:ListPolicies', 'organizations:DescribeCreateAccountStatus'],
-            resources: ['*'],
-          });
-
-          const orgPolicyWrite = new cdk.aws_iam.PolicyStatement({
-            sid: 'OrgWrite',
-            effect: cdk.aws_iam.Effect.ALLOW,
-            actions: ['organizations:AttachPolicy'],
-            resources: [
-              `arn:${
-                this.partition
-              }:organizations::${props.accountsConfig.getManagementAccountId()}:policy/o-*/service_control_policy/${quarantineScpId}`,
-              `arn:${this.partition}:organizations::${props.accountsConfig.getManagementAccountId()}:account/o-*/*`,
-            ],
-          });
-
-          Logger.info(`[accounts-stack] Creating function to attach quarantine scp to accounts`);
-          const attachQuarantineFunction = new cdk.aws_lambda.Function(this, 'AttachQuarantineScpFunction', {
-            code: cdk.aws_lambda.Code.fromAsset(path.join(__dirname, '../lambdas/attach-quarantine-scp/dist')),
-            runtime: cdk.aws_lambda.Runtime.NODEJS_14_X,
-            handler: 'index.handler',
-            description: 'Lambda function to attach quarantine scp to new accounts',
-            timeout: cdk.Duration.minutes(5),
-            environment: { SCP_POLICY_NAME: props.organizationConfig.quarantineNewAccounts?.scpPolicyName ?? '' },
-            environmentEncryption: key,
-            initialPolicy: [orgPolicyRead, orgPolicyWrite],
-          });
-
-          // AwsSolutions-IAM4: The IAM user, role, or group uses AWS managed policies
-          NagSuppressions.addResourceSuppressionsByPath(
-            this,
-            `${this.stackName}/AttachQuarantineScpFunction/ServiceRole/Resource`,
-            [
-              {
-                id: 'AwsSolutions-IAM4',
-                reason: 'AWS Custom resource provider framework-role created by cdk.',
-              },
-            ],
-          );
-
-          // AwsSolutions-IAM5: The IAM entity contains wildcard permissions
-          NagSuppressions.addResourceSuppressionsByPath(
-            this,
-            `${this.stackName}/AttachQuarantineScpFunction/ServiceRole/DefaultPolicy/Resource`,
-            [
-              {
-                id: 'AwsSolutions-IAM5',
-                reason: 'Allows only specific policy.',
-              },
-            ],
-          );
-
-          const createAccountEventRule = new cdk.aws_events.Rule(this, 'CreateAccountRule', {
-            eventPattern: {
-              source: ['aws.organizations'],
-              detailType: ['AWS API Call via CloudTrail'],
-              detail: {
-                eventSource: ['organizations.amazonaws.com'],
-                eventName: ['CreateAccount'],
-              },
+        // AwsSolutions-IAM5: The IAM entity contains wildcard permissions
+        this.nagSuppressionInputs.push({
+          id: NagSuppressionRuleIds.IAM5,
+          details: [
+            {
+              path: `${this.stackName}/MoveAccountRule/MoveAccountRole/Policy/Resource`,
+              reason: 'AWS Custom resource provider role created by cdk.',
             },
-            description: 'Rule to notify when a new account is created.',
-          });
+          ],
+        });
 
-          createAccountEventRule.addTarget(
-            new cdk.aws_events_targets.LambdaFunction(attachQuarantineFunction, {
-              maxEventAge: cdk.Duration.hours(4),
-              retryAttempts: 2,
-            }),
-          );
+        // AwsSolutions-IAM4: The IAM user, role, or group uses AWS managed policies
+        this.nagSuppressionInputs.push({
+          id: NagSuppressionRuleIds.IAM4,
+          details: [
+            {
+              path: `${this.stackName}/MoveAccountRule/MoveAccountTargetFunction/ServiceRole/Resource`,
+              reason: 'AWS Custom resource provider role created by cdk.',
+            },
+          ],
+        });
 
-          //If any GovCloud accounts are configured also
-          //watch for any GovCloudCreateAccount events
-          if (props.accountsConfig.anyGovCloudAccounts()) {
-            Logger.info(
-              `[accounts-stack] Creating EventBridge rule to attach quarantine scp to accounts when GovCloud is enabled`,
-            );
-            const createGovCloudAccountEventRule = new cdk.aws_events.Rule(this, 'CreateGovCloudAccountRule', {
-              eventPattern: {
-                source: ['aws.organizations'],
-                detailType: ['AWS API Call via CloudTrail'],
-                detail: {
-                  eventSource: ['organizations.amazonaws.com'],
-                  eventName: ['CreateGovCloudAccount'],
-                },
-              },
-              description: 'Rule to notify when a new account is created using the create govcloud account api.',
-            });
-
-            createGovCloudAccountEventRule.addTarget(
-              new cdk.aws_events_targets.LambdaFunction(attachQuarantineFunction, {
-                maxEventAge: cdk.Duration.hours(4),
-                retryAttempts: 2,
-              }),
-            );
-          }
-
-          new cdk.aws_logs.LogGroup(this, `${attachQuarantineFunction.node.id}LogGroup`, {
-            logGroupName: `/aws/lambda/${attachQuarantineFunction.functionName}`,
-            retention: props.globalConfig.cloudwatchLogRetentionInDays,
-            encryptionKey: key,
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
-          });
-        }
+        // AwsSolutions-IAM5: The IAM entity contains wildcard permissions.
+        this.nagSuppressionInputs.push({
+          id: NagSuppressionRuleIds.IAM5,
+          details: [
+            {
+              path: `${this.stackName}/MoveAccountRule/MoveAccountTargetFunction/ServiceRole/DefaultPolicy/Resource`,
+              reason: 'AWS Custom resource provider role created by cdk.',
+            },
+          ],
+        });
       }
     }
-    Logger.info('[accounts-stack] Completed stack synthesis');
+    return moveAccountRule;
+  }
+
+  /**
+   * Function to enable opt-in regions for all accounts
+   * @param props {@link AccountsStackProps}
+   */
+
+  private enableOptInRegions(props: AccountsStackProps) {
+    this.logger.info(`Enable opt-in regions`);
+    new OptInRegions(this, 'OptInRegions', {
+      kmsKey: this.keyResource.cloudwatchKey,
+      logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
+      managementAccountId: props.accountsConfig.getManagementAccountId(),
+      accountIds: props.accountsConfig.getAccountIds(),
+      homeRegion: props.globalConfig.homeRegion,
+      enabledRegions: props.globalConfig.enabledRegions,
+      globalRegion: props.globalRegion,
+    });
+
+    const optInRegionsIam4SuppressionPaths = [
+      'OptInRegions/OptInRegionsOnEvent/ServiceRole/Resource',
+      'OptInRegions/OptInRegionsIsComplete/ServiceRole/Resource',
+      'OptInRegions/OptInRegionsProvider/framework-onEvent/ServiceRole/Resource',
+      'OptInRegions/OptInRegionsProvider/framework-isComplete/ServiceRole/Resource',
+      'OptInRegions/OptInRegionsProvider/framework-onTimeout/ServiceRole/Resource',
+    ];
+
+    const optInRegionsIam5SuppressionPaths = [
+      'OptInRegions/OptInRegionsOnEvent/ServiceRole/DefaultPolicy/Resource',
+      'OptInRegions/OptInRegionsIsComplete/ServiceRole/DefaultPolicy/Resource',
+      'OptInRegions/OptInRegionsProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource',
+      'OptInRegions/OptInRegionsProvider/framework-isComplete/ServiceRole/DefaultPolicy/Resource',
+      'OptInRegions/OptInRegionsProvider/framework-onTimeout/ServiceRole/DefaultPolicy/Resource',
+      'OptInRegions/OptInRegionsProvider/waiter-state-machine/Role/DefaultPolicy/Resource',
+    ];
+
+    // AwsSolutions-IAM4: The IAM user, role, or group uses AWS managed policies
+    this.createNagSuppressionsInputs(NagSuppressionRuleIds.IAM4, optInRegionsIam4SuppressionPaths);
+
+    // AwsSolutions-IAM5: The IAM entity contains wildcard permissions and does not have a cdk_nag rule suppression with evidence for those permission
+    this.createNagSuppressionsInputs(NagSuppressionRuleIds.IAM5, optInRegionsIam5SuppressionPaths);
+
+    // AwsSolutions-SF1: The Step Function does not log "ALL" events to CloudWatch Logs.
+    this.createNagSuppressionsInputs(NagSuppressionRuleIds.SF1, [
+      'OptInRegions/OptInRegionsProvider/waiter-state-machine/Resource',
+    ]);
+
+    // AwsSolutions-SF2: The Step Function does not have X-Ray tracing enabled.
+    this.createNagSuppressionsInputs(NagSuppressionRuleIds.SF2, [
+      'OptInRegions/OptInRegionsProvider/waiter-state-machine/Resource',
+    ]);
+  }
+
+  /**
+   * Create NagSuppressions inputs
+   * @param inputs
+   */
+  private createNagSuppressionsInputs(type: NagSuppressionRuleIds, inputs: string[]) {
+    // AwsSolutions-IAM4: The IAM user, role, or group uses AWS managed policies
+    for (const input of inputs) {
+      this.nagSuppressionInputs.push({
+        id: type,
+        details: [
+          {
+            path: `${this.stackName}/${input}`,
+            reason: 'AWS Custom resource provider role created by cdk.',
+          },
+        ],
+      });
+    }
   }
 }

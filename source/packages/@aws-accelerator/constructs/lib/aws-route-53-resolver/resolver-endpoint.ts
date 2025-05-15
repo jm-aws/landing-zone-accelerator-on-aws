@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -68,21 +68,21 @@ export class ResolverEndpoint extends cdk.Resource implements IResolverEndpoint 
   constructor(scope: Construct, id: string, props: ResolverEndpointProps) {
     super(scope, id);
 
+    this.name = props.name;
     this.ipAddresses = props.ipAddresses.map(item => {
       return { subnetId: item };
     });
 
-    props.tags?.push({ key: 'Name', value: props.name });
-
     const resource = new cdk.aws_route53resolver.CfnResolverEndpoint(this, 'Resource', {
       direction: props.direction,
       ipAddresses: this.ipAddresses,
+      name: props.name,
       securityGroupIds: props.securityGroupIds,
       tags: props.tags,
     });
+    cdk.Tags.of(this).add('Name', this.name);
 
     this.endpointArn = resource.attrArn;
     this.endpointId = resource.attrResolverEndpointId;
-    this.name = resource.attrName;
   }
 }

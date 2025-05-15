@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,9 +11,15 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
-AWS.config.logger = console;
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { getGlobalRegion, setRetryStrategy } from '@aws-accelerator/utils/lib/common-functions';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
+import {
+  AccountAlreadyRegisteredException,
+  DeregisterDelegatedAdministratorCommand,
+  OrganizationsClient,
+  RegisterDelegatedAdministratorCommand,
+} from '@aws-sdk/client-organizations';
 
 /**
  * register-delegated-administrator - lambda handler
@@ -21,46 +27,39 @@ AWS.config.logger = console;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
     }
   | undefined
 > {
+  const partition = event.ResourceProperties['partition'];
   const servicePrincipal: string = event.ResourceProperties['servicePrincipal'];
   const accountId: string = event.ResourceProperties['accountId'];
-  const partition = event.ResourceProperties['partition'];
-
-  let organizationsClient: AWS.Organizations;
-  if (partition === 'aws-us-gov') {
-    organizationsClient = new AWS.Organizations({ region: 'us-gov-west-1' });
-  } else {
-    organizationsClient = new AWS.Organizations({ region: 'us-east-1' });
-  }
+  const solutionId = process.env['SOLUTION_ID'];
+  const globalRegion = getGlobalRegion(partition);
+  const organizationsClient = new OrganizationsClient({
+    region: globalRegion,
+    customUserAgent: solutionId,
+    retryStrategy: setRetryStrategy(),
+  });
 
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
       try {
         await throttlingBackOff(() =>
-          organizationsClient
-            .registerDelegatedAdministrator({ ServicePrincipal: servicePrincipal, AccountId: accountId })
-            .promise(),
+          organizationsClient.send(
+            new RegisterDelegatedAdministratorCommand({ ServicePrincipal: servicePrincipal, AccountId: accountId }),
+          ),
         );
-      } catch (
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        e: any
-      ) {
-        if (
-          // SDKv2 Error Structure
-          e.code === 'AccountAlreadyRegisteredException' ||
-          // SDKv3 Error Structure
-          e.name === 'AccountAlreadyRegisteredException'
-        ) {
+      } catch (e: unknown) {
+        if (e instanceof AccountAlreadyRegisteredException) {
           console.warn(e.name + ': ' + e.message);
           return;
         }
+        throw e;
       }
 
       return {
@@ -70,9 +69,9 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 
     case 'Delete':
       await throttlingBackOff(() =>
-        organizationsClient
-          .deregisterDelegatedAdministrator({ ServicePrincipal: servicePrincipal, AccountId: accountId })
-          .promise(),
+        organizationsClient.send(
+          new DeregisterDelegatedAdministratorCommand({ ServicePrincipal: servicePrincipal, AccountId: accountId }),
+        ),
       );
 
       return {

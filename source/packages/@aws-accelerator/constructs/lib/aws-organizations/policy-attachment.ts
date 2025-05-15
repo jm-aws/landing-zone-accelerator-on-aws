@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,9 +12,14 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-import { v4 as uuidv4 } from 'uuid';
 import { PolicyType } from './policy';
 import { Construct } from 'constructs';
+import { createHash } from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
+import { createLogger } from '@aws-accelerator/utils/lib/logger';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '@aws-accelerator/utils/lib/lambda';
+
+const logger = createLogger(['constructs-organization-policy-attachment']);
 
 const path = require('path');
 
@@ -25,10 +30,13 @@ export interface PolicyAttachmentProps {
   readonly policyId: string;
   readonly targetId?: string;
   readonly type: PolicyType;
+  readonly strategy?: string;
+  readonly configPolicyNames: string[];
+  readonly acceleratorPrefix: string;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
@@ -43,6 +51,7 @@ export class PolicyAttachment extends Construct {
   public readonly policyId: string;
   public readonly targetId: string | undefined;
   public readonly type: PolicyType;
+  public readonly strategy?: string;
 
   constructor(scope: Construct, id: string, props: PolicyAttachmentProps) {
     super(scope, id);
@@ -50,21 +59,43 @@ export class PolicyAttachment extends Construct {
     this.policyId = props.policyId;
     this.targetId = props.targetId;
     this.type = props.type;
+    this.strategy = props.strategy;
 
     //
     // Function definition for the custom resource
     //
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, 'Custom::OrganizationsAttachPolicy', {
       codeDirectory: path.join(__dirname, 'attach-policy/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       policyStatements: [
         {
           Effect: 'Allow',
-          Action: ['organizations:AttachPolicy', 'organizations:DetachPolicy', 'organizations:ListPoliciesForTarget'],
+          Action: [
+            'organizations:AttachPolicy',
+            'organizations:DetachPolicy',
+            'organizations:ListPoliciesForTarget',
+            'organizations:ListTagsForResource',
+            'organizations:ListPolicies',
+          ],
           Resource: '*',
         },
       ],
     });
+
+    let uuid: string;
+    const attachArray = [props.policyId, props.targetId ?? '', ...props.configPolicyNames].toString();
+    const attachHash = createHash('md5').update(attachArray).digest('hex');
+    // Boolean to force update
+    const forceUpdate = process.env['ACCELERATOR_FORCED_UPDATE']
+      ? process.env['ACCELERATOR_FORCED_UPDATE'] === 'true'
+      : false;
+
+    if (forceUpdate) {
+      logger.warn(`ACCELERATOR_FORCED_UPDATE env variable is set. Forcing an update.`);
+      uuid = uuidv4();
+    } else {
+      uuid = attachHash;
+    }
 
     //
     // Custom Resource definition. We want this resource to be evaluated on
@@ -76,10 +107,13 @@ export class PolicyAttachment extends Construct {
       serviceToken: provider.serviceToken,
       properties: {
         partition: cdk.Aws.PARTITION,
-        uuid: uuidv4(),
+        uuid,
         policyId: props.policyId,
         targetId: props.targetId,
         type: props.type,
+        strategy: props.strategy,
+        configPolicyNames: props.configPolicyNames,
+        policyTagKey: `${props.acceleratorPrefix}Managed`,
       },
     });
 

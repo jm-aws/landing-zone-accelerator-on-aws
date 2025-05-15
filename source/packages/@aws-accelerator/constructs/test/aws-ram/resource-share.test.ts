@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,8 +12,9 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-import { SynthUtils } from '@aws-cdk/assert';
-import { ResourceShare, ResourceShareOwner } from '../../index';
+import { ResourceShare, ResourceShareOwner, ResourceShareItem } from '../../lib/aws-ram/resource-share';
+import { snapShotTest } from '../snapshot-test';
+import { describe } from '@jest/globals';
 
 const testNamePrefix = 'Construct(ResourceShare): ';
 
@@ -45,85 +46,25 @@ ResourceShare.fromLookup(stackLookup, 'ResourceShareLookup', {
  * ResourceShare construct test
  */
 describe('ResourceShare', () => {
-  /**
-   * Snapshot test
-   */
-  test(`${testNamePrefix} Snapshot Test`, () => {
-    expect(SynthUtils.toCloudFormation(stack)).toMatchSnapshot();
-  });
+  snapShotTest(testNamePrefix, stack);
+});
 
-  /**
-   * Number of ResourceShare resource test
-   */
-  test(`${testNamePrefix} ResourceShare resource count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::RAM::ResourceShare', 1);
-  });
+//Lookup Resource share item
+// const resourceShare: IResourceShare =
+ResourceShareItem.fromLookup(stackLookup, 'ResourceShareItem', {
+  logRetentionInDays: 7,
+  kmsKey: new cdk.aws_kms.Key(stack, 'CustomKey', {}),
+  resourceShareItemType: 'resourceShareItemType',
+  resourceShare: ResourceShare.fromLookup(stackLookup, 'ResourceShareItemLookup', {
+    resourceShareOwner: ResourceShareOwner.OTHER_ACCOUNTS,
+    resourceShareName: 'ResourceShareName',
+    owningAccountId: '111111111111',
+  }),
+});
 
-  /**
-   * ResourceShare resource configuration test
-   */
-  test(`${testNamePrefix} ResourceShare resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        ResourceShareTestResourceShareResourceShare8D7B67C7: {
-          Type: 'AWS::RAM::ResourceShare',
-          Properties: {
-            AllowExternalPrincipals: true,
-            Name: 'TestResourceShare',
-            PermissionArns: [
-              {
-                'Fn::Join': [
-                  '',
-                  [
-                    'arn:',
-                    {
-                      Ref: 'AWS::Partition',
-                    },
-                    ':s3:::test-bucket-1-',
-                    {
-                      Ref: 'AWS::AccountId',
-                    },
-                    '-',
-                    {
-                      Ref: 'AWS::Region',
-                    },
-                  ],
-                ],
-              },
-              {
-                'Fn::Join': [
-                  '',
-                  [
-                    'arn:',
-                    {
-                      Ref: 'AWS::Partition',
-                    },
-                    ':s3:::test-bucket-2-',
-                    {
-                      Ref: 'AWS::AccountId',
-                    },
-                    '-',
-                    {
-                      Ref: 'AWS::Region',
-                    },
-                  ],
-                ],
-              },
-            ],
-            Principals: ['accountID', 'organizationUnitId'],
-            ResourceArns: ['ec2:TransitGateway'],
-          },
-        },
-      },
-    });
-  });
-
-  /**
-   * Number of Lambda function resource test
-   */
-  test(`${testNamePrefix} Lambda function resource count test`, () => {
-    cdk.assertions.Template.fromStack(stackLookup).resourceCountIs('AWS::Lambda::Function', 1);
-  });
-
-  //End of file
+/**
+ * ResourceShare construct test
+ */
+describe('ResourceShareItem', () => {
+  snapShotTest(testNamePrefix, stack);
 });

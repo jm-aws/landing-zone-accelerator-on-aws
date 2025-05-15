@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,8 +12,9 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-import { SynthUtils } from '@aws-cdk/assert';
 import { Document } from '../../lib/aws-ssm/document';
+import { snapShotTest } from '../snapshot-test';
+import { describe } from '@jest/globals';
 
 const testNamePrefix = 'Construct(Document): ';
 
@@ -24,19 +25,24 @@ new Document(stack, 'Document', {
   name: 'DocumentName',
   content: JSON.parse('{}'),
   documentType: 'Automation',
-  sharedWithAccountIds: [],
+  sharedWithAccountIds: ['accountA'],
   logRetentionInDays: 3653,
   kmsKey: new cdk.aws_kms.Key(stack, 'Key', {}),
+  targetType: undefined,
+});
+new Document(stack, 'Document1', {
+  name: 'DocumentName1',
+  content: JSON.parse('{}'),
+  documentType: 'Automation',
+  sharedWithAccountIds: ['accountA'],
+  logRetentionInDays: 3653,
+  kmsKey: new cdk.aws_kms.Key(stack, 'Key1', {}),
+  targetType: '/AWS::EC2::Instance',
 });
 
 /**
  * Document construct test
  */
 describe('Document', () => {
-  /**
-   * Snapshot test
-   */
-  test(`${testNamePrefix} Snapshot Test`, () => {
-    expect(SynthUtils.toCloudFormation(stack)).toMatchSnapshot();
-  });
+  snapShotTest(testNamePrefix, stack);
 });

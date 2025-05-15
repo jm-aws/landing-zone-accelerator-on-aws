@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -115,10 +115,11 @@ export class TesterStack extends cdk.Stack {
        * https://github.com/aws/aws-cdk/issues/17582
        */
       const lambdaFunction = new lambda.Function(this, `${props.qualifier}-${testName}Function`, {
-        runtime: lambda.Runtime.NODEJS_14_X,
+        runtime: lambda.Runtime.NODEJS_18_X,
         handler: 'index.handler',
         code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas/dist')),
         description: `AWS Config custom rule function used for test case "${test.name}"`,
+        timeout: cdk.Duration.minutes(30),
       });
 
       lambdaFunction.role?.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('ReadOnlyAccess'));

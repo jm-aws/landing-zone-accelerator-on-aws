@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -12,93 +12,81 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-
 import { ResolverRule, ResolverRuleAssociation } from '../../lib/aws-route-53-resolver/resolver-rule';
+import { snapShotTest } from '../snapshot-test';
+import { describe, expect, it } from '@jest/globals';
 
 const testNamePrefix = 'Construct(ResolverRule): ';
 
-const stack = new cdk.Stack();
+const forwardRuleStack = new cdk.Stack();
+const systemRuleStack = new cdk.Stack();
 
 const ipAddresses = [{ ip: '1.1.1.1' }, { ip: '2.2.2.2' }];
 
-const rule = new ResolverRule(stack, 'TestResolverRule', {
+const forwardRule = new ResolverRule(forwardRuleStack, 'TestResolverRule', {
   domainName: 'test.com',
   name: 'TestResolverRule',
   resolverEndpointId: 'TestEndpoint',
   targetIps: ipAddresses,
   tags: [],
-  kmsKey: new cdk.aws_kms.Key(stack, 'CustomKey', {}),
+  kmsKey: new cdk.aws_kms.Key(forwardRuleStack, 'CustomKey', {}),
   logRetentionInDays: 3653,
 });
 
-new ResolverRuleAssociation(stack, 'TestResolverRuleAssoc', {
-  resolverRuleId: rule.ruleId,
+new ResolverRuleAssociation(forwardRuleStack, 'TestResolverRuleAssoc', {
+  resolverRuleId: forwardRule.ruleId,
+  vpcId: 'TestVpc',
+});
+
+const systemRule = new ResolverRule(systemRuleStack, 'TestResolverRule', {
+  domainName: 'test.com',
+  name: 'TestResolverRule',
+  resolverEndpointId: 'TestEndpoint',
+  targetIps: ipAddresses,
+  tags: [],
+  kmsKey: new cdk.aws_kms.Key(systemRuleStack, 'CustomKey', {}),
+  logRetentionInDays: 3653,
+  ruleType: 'SYSTEM',
+});
+
+new ResolverRuleAssociation(systemRuleStack, 'TestResolverRuleAssoc', {
+  resolverRuleId: systemRule.ruleId,
   vpcId: 'TestVpc',
 });
 
 describe('ResolverRule', () => {
-  /**
-   * Resolver rule count test
-   */
-  test(`${testNamePrefix} Resolver rule count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Route53Resolver::ResolverRule', 1);
+  snapShotTest(testNamePrefix, forwardRuleStack);
+  snapShotTest(testNamePrefix, systemRuleStack);
+  it('throw error when targetInbound is specified without logRetention', () => {
+    function targetInboundLogRetentionError() {
+      new ResolverRule(systemRuleStack, 'TargetInboundLogRetentionError', {
+        domainName: 'test.com',
+        name: 'TestResolverRule',
+        resolverEndpointId: 'TestEndpoint',
+        targetIps: ipAddresses,
+        tags: [],
+        targetInbound: 'targetInbound',
+        kmsKey: new cdk.aws_kms.Key(systemRuleStack, 'CustomKeyTargetInboundLogRetentionError', {}),
+        ruleType: 'SYSTEM',
+      });
+    }
+    expect(targetInboundLogRetentionError).toThrow(
+      new Error('logRetentionInDays property must be included if targetInbound property is defined.'),
+    );
   });
-
-  /**
-   * Resolver rule association count test
-   */
-  test(`${testNamePrefix} Resolver rule association count test`, () => {
-    cdk.assertions.Template.fromStack(stack).resourceCountIs('AWS::Route53Resolver::ResolverRuleAssociation', 1);
-  });
-
-  /**
-   * Resolver rule resource configuration test
-   */
-  test(`${testNamePrefix} Resolver rule resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestResolverRule183FBE0C: {
-          Type: 'AWS::Route53Resolver::ResolverRule',
-          Properties: {
-            DomainName: 'test.com',
-            ResolverEndpointId: 'TestEndpoint',
-            RuleType: 'FORWARD',
-            TargetIps: [
-              {
-                Ip: '1.1.1.1',
-              },
-              {
-                Ip: '2.2.2.2',
-              },
-            ],
-            Tags: [
-              {
-                Key: 'Name',
-                Value: 'TestResolverRule',
-              },
-            ],
-          },
-        },
-      },
+  it('test private function lookup inbound', () => {
+    const testLookupInbound = new ResolverRule(systemRuleStack, 'TestLookupInbound', {
+      domainName: 'test.com',
+      name: 'TestResolverRule',
+      resolverEndpointId: 'TestEndpoint',
+      targetIps: ipAddresses,
+      tags: [],
+      targetInbound: 'targetInbound',
+      kmsKey: new cdk.aws_kms.Key(systemRuleStack, 'CustomKeyTestLookupInbound', {}),
+      logRetentionInDays: 3653,
+      ruleType: 'SYSTEM',
     });
-  });
-
-  /**
-   * Resolver rule association resource configuration test
-   */
-  test(`${testNamePrefix} Resolver rule association resource configuration test`, () => {
-    cdk.assertions.Template.fromStack(stack).templateMatches({
-      Resources: {
-        TestResolverRuleAssoc7E0DCDC2: {
-          Type: 'AWS::Route53Resolver::ResolverRuleAssociation',
-          Properties: {
-            ResolverRuleId: {
-              'Fn::GetAtt': ['TestResolverRule183FBE0C', 'ResolverRuleId'],
-            },
-            VPCId: 'TestVpc',
-          },
-        },
-      },
-    });
+    //output of testLookupId ruleId is a cdk token hash so the check here is to make sure its a string
+    expect(typeof testLookupInbound.ruleId).toBe('string');
   });
 });

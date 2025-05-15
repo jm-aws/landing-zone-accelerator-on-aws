@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -14,6 +14,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { v4 as uuidv4 } from 'uuid';
 import { Construct } from 'constructs';
+import { CUSTOM_RESOURCE_PROVIDER_RUNTIME } from '../../utils/lib/lambda';
 import path = require('path');
 
 export interface LoadAcceleratorConfigTableProps {
@@ -25,19 +26,28 @@ export interface LoadAcceleratorConfigTableProps {
   readonly configS3Bucket: string;
   readonly organizationsConfigS3Key: string;
   readonly accountConfigS3Key: string;
+  readonly replacementsConfigS3Key?: string;
   readonly commitId: string;
   readonly partition: string;
   readonly managementAccountId: string;
   readonly region: string;
   readonly stackName: string;
   /**
-   * Custom resource lambda log group encryption key
+   * Custom resource lambda log group encryption key, when undefined default AWS managed key will be used
    */
-  readonly kmsKey: cdk.aws_kms.Key;
+  readonly kmsKey?: cdk.aws_kms.IKey;
   /**
    * Custom resource lambda log retention in days
    */
   readonly logRetentionInDays: number;
+  /**
+   * Boolean for single account mode (i.e. AWS Jam or Workshop)
+   */
+  readonly enableSingleAccountMode: boolean;
+  /**
+   * Boolean for organization
+   */
+  readonly isOrgsEnabled: boolean;
 }
 
 /**
@@ -51,13 +61,22 @@ export class LoadAcceleratorConfigTable extends Construct {
 
     const LOAD_CONFIG_TABLE_RESOURCE_TYPE = 'Custom::LoadAcceleratorConfigTable';
 
+    const environment: {
+      [key: string]: string;
+    } = {};
+
+    if (props.enableSingleAccountMode) {
+      environment['ACCELERATOR_ENABLE_SINGLE_ACCOUNT_MODE'] = 'true';
+    }
+
     //
     // Function definition for the custom resource
     //
     const provider = cdk.CustomResourceProvider.getOrCreateProvider(this, LOAD_CONFIG_TABLE_RESOURCE_TYPE, {
       codeDirectory: path.join(__dirname, 'lambdas/load-config-table/dist'),
-      runtime: cdk.CustomResourceProviderRuntime.NODEJS_14_X,
+      runtime: CUSTOM_RESOURCE_PROVIDER_RUNTIME,
       timeout: cdk.Duration.minutes(15),
+      memorySize: cdk.Size.mebibytes(1024),
       policyStatements: [
         {
           Sid: 'organizations',
@@ -67,6 +86,12 @@ export class LoadAcceleratorConfigTable extends Construct {
             'organizations:ListRoots',
             'organizations:ListOrganizationalUnitsForParent',
           ],
+          Resource: '*',
+        },
+        {
+          Sid: 'getReplacements',
+          Effect: 'Allow',
+          Action: ['ssm:GetParameter'],
           Resource: '*',
         },
         {
@@ -119,10 +144,12 @@ export class LoadAcceleratorConfigTable extends Construct {
         configS3Bucket: props.configS3Bucket,
         organizationsConfigS3Key: props.organizationsConfigS3Key,
         accountConfigS3Key: props.accountConfigS3Key,
+        replacementsConfigS3Key: props.replacementsConfigS3Key,
         commitId: props.commitId,
         partition: props.partition,
         stackName: props.stackName,
         uuid: uuidv4(), // Generates a new UUID to force the resource to update
+        isOrgsEnabled: props.isOrgsEnabled,
       },
     });
 

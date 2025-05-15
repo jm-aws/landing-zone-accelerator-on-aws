@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,12 +11,11 @@
  *  and limitations under the License.
  */
 
-import * as AWS from 'aws-sdk';
+import { DescribeAvailabilityZonesCommand, EC2Client } from '@aws-sdk/client-ec2';
+import { DescribeFirewallCommand, NetworkFirewallClient } from '@aws-sdk/client-network-firewall';
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-
-AWS.config.logger = console;
-
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { CloudFormationCustomResourceEvent } from '@aws-accelerator/utils/lib/common-types';
 /**
  * get-network-firewall-endpoint - lambda handler
  *
@@ -24,7 +23,7 @@ AWS.config.logger = console;
  * @returns
  */
 
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(event: CloudFormationCustomResourceEvent): Promise<
   | {
       PhysicalResourceId: string | undefined;
       Status: string;
@@ -35,28 +34,38 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
   const endpointAz: string = event.ResourceProperties['endpointAz'];
   const firewallArn: string = event.ResourceProperties['firewallArn'];
   const region: string = event.ResourceProperties['region'];
-  const nfwClient = new AWS.NetworkFirewall({ region: region });
+  const solutionId = process.env['SOLUTION_ID'];
+
+  const ec2Client = new EC2Client({ customUserAgent: solutionId });
+  const nfwClient = new NetworkFirewallClient({ customUserAgent: solutionId });
 
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
+      const logicalZoneName = await getAvailabilityZone(ec2Client, endpointAz, region);
       let endpointId: string | undefined = undefined;
-      const response = await throttlingBackOff(() =>
-        nfwClient.describeFirewall({ FirewallArn: firewallArn }).promise(),
-      );
 
-      // Check for endpoint in specified AZ
-      if (response.FirewallStatus?.SyncStates) {
-        endpointId = response.FirewallStatus?.SyncStates[endpointAz].Attachment?.EndpointId;
-      }
+      try {
+        const response = await throttlingBackOff(() =>
+          nfwClient.send(new DescribeFirewallCommand({ FirewallArn: firewallArn })),
+        );
+        //
+        // Check for endpoint in specified AZ
+        if (response.FirewallStatus?.SyncStates) {
+          endpointId = response.FirewallStatus.SyncStates[logicalZoneName].Attachment?.EndpointId;
+        }
+        //
+        // Validate endpoint ID
+        if (!endpointId) {
+          throw new Error(`Unable to locate Network Firewall endpoint in AZ ${endpointAz}`);
+        }
 
-      if (endpointId) {
         return {
           PhysicalResourceId: endpointId,
           Status: 'SUCCESS',
         };
-      } else {
-        throw new Error(`Unable to locate Network Firewall endpoint in AZ ${endpointAz}`);
+      } catch (e) {
+        throw new Error(`Error retrieving Network Firewall endpoint: ${e}`);
       }
 
     case 'Delete':
@@ -65,5 +74,39 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
         PhysicalResourceId: event.PhysicalResourceId,
         Status: 'SUCCESS',
       };
+  }
+}
+
+/**
+ * Returns the logical zone name for the specified AZ
+ * @param ec2Client
+ * @param endpointAz
+ * @param region
+ * @returns
+ */
+async function getAvailabilityZone(ec2Client: EC2Client, endpointAz: string, region: string): Promise<string> {
+  if (endpointAz.includes(region)) {
+    return endpointAz;
+  }
+
+  try {
+    const response = await throttlingBackOff(() =>
+      ec2Client.send(
+        new DescribeAvailabilityZonesCommand({
+          ZoneIds: [endpointAz],
+        }),
+      ),
+    );
+    //
+    // Validate response
+    if (!response.AvailabilityZones) {
+      throw new Error(`Unable to retrieve details for AZ ${endpointAz}`);
+    }
+    if (!response.AvailabilityZones[0].ZoneName) {
+      throw new Error(`Unable to retrieve logical zone name for AZ ${endpointAz}`);
+    }
+    return response.AvailabilityZones[0].ZoneName;
+  } catch (e) {
+    throw new Error(`Error retrieving logical zone name: ${e}`);
   }
 }

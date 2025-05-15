@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -13,44 +13,61 @@
 
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { AcceleratorStack, AcceleratorStackProps } from './accelerator-stack';
-import { Logger } from '../logger';
+import { AcceleratorStack, AcceleratorStackProps, AcceleratorKeyType } from './accelerator-stack';
 import { DetachQuarantineScp } from '../detach-quarantine-scp';
+import { ScpResource } from '../resources/scp-resource';
 
 export class FinalizeStack extends AcceleratorStack {
-  public static readonly ACCELERATOR_MANAGEMENT_KEY_ARN_PARAMETER_NAME = '/accelerator/management/kms/key-arn';
-
   constructor(scope: Construct, id: string, props: AcceleratorStackProps) {
     super(scope, id, props);
 
-    Logger.debug(`[finalize-stack] Region: ${cdk.Stack.of(this).region}`);
+    if (props.globalRegion === cdk.Stack.of(this).region) {
+      this.logger.debug(`Retrieving CloudWatch kms key`);
 
-    let globalRegion = 'us-east-1';
-    if (props.partition === 'aws-us-gov') {
-      globalRegion = 'us-gov-west-1';
-    }
+      const lambdaKey = this.getAcceleratorKey(AcceleratorKeyType.LAMBDA_KEY);
+      const cloudwatchKey = this.getAcceleratorKey(AcceleratorKeyType.CLOUDWATCH_KEY);
+      const scpResource = new ScpResource(this, cloudwatchKey, lambdaKey, props);
 
-    if (globalRegion === cdk.Stack.of(this).region) {
-      Logger.debug(`[finalize-stack] Retrieving kms key`);
-      const keyArn = cdk.aws_ssm.StringParameter.valueForStringParameter(this, '/accelerator/management/kms/key-arn');
-      const key = cdk.aws_kms.Key.fromKeyArn(this, 'Resource', keyArn) as cdk.aws_kms.Key;
+      //
+      // Update SCP with dynamic parameters
+      //
+      scpResource.createAndAttachScps(props);
 
-      if (props.organizationConfig.quarantineNewAccounts?.enable && props.partition == 'aws') {
-        Logger.debug(`[finalize-stack] Creating resources to detach quarantine scp`);
+      //
+      // Configure revert scp changes rule
+      //
+      scpResource.configureRevertScpChanges(props);
+
+      if (process.env['CONFIG_COMMIT_ID']) {
+        this.logger.debug(`Storing configuration commit id in SSM`);
+        new cdk.aws_ssm.StringParameter(this, 'AcceleratorCommitIdParameter', {
+          parameterName: `${props.prefixes.ssmParamName}/configuration/configCommitId`,
+          stringValue: process.env['CONFIG_COMMIT_ID'],
+          description: `The hash of the latest ${props.configRepositoryName} version of the LZA configuration files to deploy successfully. If you use S3 as a location for LZA config files, this will be an S3 version Id.`,
+        });
+      }
+
+      if (props.organizationConfig.quarantineNewAccounts?.enable && props.partition === 'aws') {
+        this.logger.debug(`Creating resources to detach quarantine scp`);
         const policyId = cdk.aws_ssm.StringParameter.valueForStringParameter(
           this,
-          `/accelerator/organizations/scp/${props.organizationConfig.quarantineNewAccounts?.scpPolicyName}/id`,
+          `${props.prefixes.ssmParamName}/organizations/scp/${props.organizationConfig.quarantineNewAccounts?.scpPolicyName}/id`,
         );
 
         new DetachQuarantineScp(this, 'DetachQuarantineScp', {
           scpPolicyId: policyId,
           managementAccountId: props.accountsConfig.getManagementAccountId(),
           partition: props.partition,
-          kmsKey: key,
+          kmsKey: cloudwatchKey,
           logRetentionInDays: props.globalConfig.cloudwatchLogRetentionInDays,
         });
       }
+
+      //
+      // Create NagSuppressions
+      //
+      this.addResourceSuppressionsByPath();
     }
-    Logger.info('[finalize-stack] Completed stack synthesis');
+    this.logger.info('Completed stack synthesis');
   }
 }

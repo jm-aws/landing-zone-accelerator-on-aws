@@ -1,5 +1,5 @@
 /**
- *  Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  *  with the License. A copy of the License is located at
@@ -11,8 +11,8 @@
  *  and limitations under the License.
  */
 
-import { throttlingBackOff } from '@aws-accelerator/utils';
-import * as AWS from 'aws-sdk';
+import { throttlingBackOff } from '@aws-accelerator/utils/lib/throttle';
+import { setOrganizationsClient } from '@aws-accelerator/utils/lib/set-organizations-client';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
@@ -21,8 +21,17 @@ import {
   paginateQuery,
   DynamoDBDocumentPaginationConfiguration,
 } from '@aws-sdk/lib-dynamodb';
-AWS.config.logger = console;
-let organizationsClient: AWS.Organizations;
+
+import {
+  OrganizationsClient,
+  ListOrganizationalUnitsForParentCommand,
+  ListOrganizationalUnitsForParentCommandOutput,
+  ListRootsCommand,
+  ListRootsCommandOutput,
+  CreateOrganizationalUnitCommand,
+} from '@aws-sdk/client-organizations';
+import { CloudFormationCustomResourceEvent, Context } from '@aws-accelerator/utils/lib/common-types';
+let organizationsClient: OrganizationsClient;
 const marshallOptions = {
   convertEmptyValues: false,
   //overriding default value of false
@@ -33,12 +42,10 @@ const unmarshallOptions = {
   wrapNumbers: false,
 };
 const translateConfig = { marshallOptions, unmarshallOptions };
-const dynamodbClient = new DynamoDBClient({});
-const documentClient = DynamoDBDocumentClient.from(dynamodbClient, translateConfig);
-const paginationConfig: DynamoDBDocumentPaginationConfiguration = {
-  client: documentClient,
-  pageSize: 100,
-};
+let paginationConfig: DynamoDBDocumentPaginationConfiguration;
+let dynamodbClient: DynamoDBClient;
+let documentClient: DynamoDBDocumentClient;
+
 type OrganizationConfigRecord = {
   dataType: string;
   acceleratorKey: string;
@@ -53,7 +60,10 @@ type OrganizationConfigRecords = Array<OrganizationConfigRecord>;
  * @param event
  * @returns
  */
-export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<
+export async function handler(
+  event: CloudFormationCustomResourceEvent,
+  context: Context,
+): Promise<
   | {
       Status: string;
     }
@@ -61,24 +71,28 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 > {
   const configTableName = event.ResourceProperties['configTableName'];
   const commitId = event.ResourceProperties['commitId'];
-  const controlTowerEnabled = event.ResourceProperties['controlTowerEnabled'];
   const organizationsEnabled = event.ResourceProperties['organizationsEnabled'];
-  const partition = event.ResourceProperties['partition'];
   const organizationalUnitsToCreate: OrganizationConfigRecords = [];
+  const solutionId = process.env['SOLUTION_ID'];
+  const partition = context.invokedFunctionArn.split(':')[1];
+
+  dynamodbClient = new DynamoDBClient({ customUserAgent: solutionId });
+  documentClient = DynamoDBDocumentClient.from(dynamodbClient, translateConfig);
+  paginationConfig = {
+    client: documentClient,
+    pageSize: 100,
+  };
+
   switch (event.RequestType) {
     case 'Create':
     case 'Update':
-      if (organizationsEnabled == 'false' || controlTowerEnabled == 'true') {
-        console.log('Stopping, either Organizations not enabled or ControlTower is enabled.');
+      if (organizationsEnabled == 'false') {
+        console.log('Stopping, Organizations not enabled.');
         return {
           Status: 'SUCCESS',
         };
       }
-      if (partition === 'aws-us-gov') {
-        organizationsClient = new AWS.Organizations({ region: 'us-gov-west-1' });
-      } else {
-        organizationsClient = new AWS.Organizations({ region: 'us-east-1' });
-      }
+      organizationsClient = setOrganizationsClient(partition, solutionId);
       //read config from table
       const organizationalUnitList = await getConfigFromTable(configTableName, commitId);
       console.log(`Organizational Units retrieved from config table: ${JSON.stringify(organizationalUnitList)}`);
@@ -124,16 +138,17 @@ export async function handler(event: AWSLambda.CloudFormationCustomResourceEvent
 }
 async function lookupOrganizationalUnit(name: string, parentId: string): Promise<string> {
   let nextToken: string | undefined = undefined;
-  const page = await throttlingBackOff(() =>
-    organizationsClient.listOrganizationalUnitsForParent({ ParentId: parentId, NextToken: nextToken }).promise(),
-  );
-  for (const ou of page.OrganizationalUnits ?? []) {
-    if (ou.Name == name) {
-      return ou.Id!;
+  do {
+    const page: ListOrganizationalUnitsForParentCommandOutput = await organizationsClient.send(
+      new ListOrganizationalUnitsForParentCommand({ ParentId: parentId, NextToken: nextToken }),
+    );
+    for (const ou of page.OrganizationalUnits ?? []) {
+      if (ou.Name == name) {
+        return ou.Id!;
+      }
+      nextToken = page.NextToken;
     }
-    nextToken = page.NextToken;
-  }
-  while (nextToken);
+  } while (nextToken);
   return '';
 }
 async function getConfigFromTable(configTableName: string, commitId: string): Promise<OrganizationConfigRecords> {
@@ -161,7 +176,7 @@ async function getRootId(): Promise<string> {
   let rootId = '';
   let nextToken: string | undefined = undefined;
   do {
-    const page = await throttlingBackOff(() => organizationsClient.listRoots({ NextToken: nextToken }).promise());
+    const page: ListRootsCommandOutput = await organizationsClient.send(new ListRootsCommand({ NextToken: nextToken }));
     for (const item of page.Roots ?? []) {
       if (item.Name === 'Root' && item.Id && item.Arn) {
         rootId = item.Id;
@@ -210,13 +225,11 @@ async function createOrganizationalUnitFromPath(
   }
   // Create the OU if not found
   try {
-    const organizationsResponse = await throttlingBackOff(() =>
-      organizationsClient
-        .createOrganizationalUnit({
-          Name: name,
-          ParentId: parentId,
-        })
-        .promise(),
+    const organizationsResponse = await organizationsClient.send(
+      new CreateOrganizationalUnitCommand({
+        Name: name,
+        ParentId: parentId,
+      }),
     );
     console.log(`Created OU with id: ${organizationsResponse.OrganizationalUnit?.Id}`);
     const params: UpdateCommandInput = {
